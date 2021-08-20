@@ -64,6 +64,7 @@ class AtomisticModel(pl.LightningModule):
         scheduler_args: Optional[Dict[str, Any]] = None,
         scheduler_monitor: Optional[str] = None,
         postprocess: Optional[List[Transform]] = None,
+        ignore_silver: Optional[bool] = False,
     ):
         """
         Args:
@@ -94,6 +95,7 @@ class AtomisticModel(pl.LightningModule):
         self.outputs = nn.ModuleList(outputs)
         self.output_modules = nn.ModuleList(output_modules)
         self.pp = postprocess or []
+        self.ignore_silver = ignore_silver
 
         self.required_derivatives = set()
         for m in self.output_modules:
@@ -120,6 +122,10 @@ class AtomisticModel(pl.LightningModule):
 
         results = {out.property: inputs[out.property] for out in self.outputs}
         results = self.postprocess(inputs, results)
+
+        if self.ignore_silver:
+            results["forces"] = results["forces"][inputs["_atomic_numbers"] != 47]
+
         return results
 
     def loss_fn(self, pred, batch):
