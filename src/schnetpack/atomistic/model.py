@@ -3,16 +3,24 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, Callable, List, Type, TYPE_CHECKING
 
+import torchmetrics.regression
+
 from schnetpack.transform import Transform
 
 import torch
 import pytorch_lightning as pl
 import torch.nn as nn
+from torch import Tensor
+from torchmetrics.functional.regression.mean_absolute_error import (
+    _mean_absolute_error_compute,
+    _mean_absolute_error_update,
+)
 
 import schnetpack as spk
 from torchmetrics import Metric
 
-__all__ = ["AtomisticModel", "ModelOutput"]
+
+__all__ = ["AtomisticModel", "ModelOutput", "SelectedAtomsMAE"]
 
 
 class ModelOutput(nn.Module):
@@ -213,3 +221,29 @@ class AtomisticModel(pl.LightningModule):
         script = super().to_torchscript(file_path, method, example_inputs, **kwargs)
         self.inference_mode = imode
         return script
+
+
+class SelectedAtomsMAE(torchmetrics.regression.MeanAbsoluteError):
+
+    def __init__(self, considered_atoms=None):
+
+        super().__init__()
+
+        if considered_atoms is None:
+            self.considered_atoms = [_ for _ in range(1008, 1046)]
+        else:
+            self.considered_atoms = considered_atoms
+
+    def update(self, preds: Tensor, target: Tensor):
+        """
+        Update state with predictions and targets.
+
+        Args:
+            preds: Predictions from model
+            target: Ground truth values
+        """
+
+        sum_abs_error, n_obs = _mean_absolute_error_update(preds[self.considered_atoms], target[self.considered_atoms])
+
+        self.sum_abs_error += sum_abs_error
+        self.total += n_obs
