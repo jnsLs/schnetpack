@@ -60,9 +60,11 @@ class AtomisticModel(pl.LightningModule):
 
     """
 
+    required_derivatives: List[str]
+
     def __init__(
         self,
-        datamodule: spk.data.AtomsDataModule,
+        # datamodule: spk.data.AtomsDataModule,
         representation: nn.Module,
         output_modules: List[nn.Module],
         outputs: List[ModelOutput],
@@ -88,7 +90,7 @@ class AtomisticModel(pl.LightningModule):
             postprocess: list of postprocessors to be applied to model for predictions
         """
         super().__init__()
-        self.datamodule = datamodule
+        # self.datamodule = datamodule
         self.optimizer_cls = optimizer_cls
         self.optimizer_kwargs = optimizer_args
         self.scheduler_cls = scheduler_cls
@@ -103,10 +105,12 @@ class AtomisticModel(pl.LightningModule):
         self.output_modules = nn.ModuleList(output_modules)
         self.pp = postprocess or []
 
-        self.required_derivatives = set()
+        required_derivatives = set()
         for m in self.output_modules:
             if hasattr(m, "required_derivatives"):
-                self.required_derivatives.update(m.required_derivatives)
+                required_derivatives.update(m.required_derivatives)
+        self.required_derivatives: List[str] = list(required_derivatives)
+
         self.grad_enabled = len(self.required_derivatives) > 0
         self.inference_mode = False
 
@@ -114,7 +118,8 @@ class AtomisticModel(pl.LightningModule):
         self.postprocessors = torch.nn.ModuleList()
         for pp in self.pp:
             pp.postprocessor()
-            pp.datamodule(self.datamodule)
+            if stage == "fit":
+                pp.datamodule(self.trainer.datamodule)
             self.postprocessors.append(pp)
 
     def forward(self, inputs: Dict[str, torch.Tensor]):

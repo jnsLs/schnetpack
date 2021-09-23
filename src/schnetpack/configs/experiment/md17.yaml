@@ -1,24 +1,22 @@
 # @package _global_
 
 defaults:
-  - train_base
   - override /model: pes
-  - override /data: custom
-  - override /logger: tensorboard
+  - override /data: md17
 
 cutoff: 5.0
 n_rbf: 20
-lr: 1e-4
+lr: 5e-4
 
-name: custom_data
+run_dir: runs/md17_${data.molecule}
 energy_key: energy
 forces_key: forces
 
 data:
   distance_unit: Ang
   property_units:
-    energy: eV
-    forces: eV/Ang
+    energy: kcal/mol
+    forces: kcal/mol/Ang
   transforms:
     - _target_: schnetpack.transform.SubtractCenterOfMass
     - _target_: schnetpack.transform.RemoveOffsets
@@ -34,3 +32,4 @@ model:
     - _target_: schnetpack.transform.AddOffsets
       property: energy
       add_mean: True
+
