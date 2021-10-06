@@ -218,18 +218,21 @@ class TensorboardHook(LoggingHook):
         self.log_histogram = log_histogram
         self.img_every_n_epochs = img_every_n_epochs
 
+    def on_batch_end(self, trainer, train_batch, result, loss):
+        if self.log_train_loss:
+            self.writer.add_scalar(
+                "train/loss", float(loss.data), trainer.step
+            )
+
+        if self.log_learning_rate:
+            self.writer.add_scalar(
+                "train/learning_rate",
+                trainer.optimizer.param_groups[0]["lr"],
+                trainer.step,
+            )
+
     def on_epoch_end(self, trainer):
-        if trainer.epoch % self.every_n_epochs == 0:
-            if self.log_train_loss:
-                self.writer.add_scalar(
-                    "train/loss", self._train_loss / self._counter, trainer.epoch
-                )
-            if self.log_learning_rate:
-                self.writer.add_scalar(
-                    "train/learning_rate",
-                    trainer.optimizer.param_groups[0]["lr"],
-                    trainer.epoch,
-                )
+        pass
 
     def on_validation_end(self, trainer, val_loss):
         if trainer.epoch % self.every_n_epochs == 0:
@@ -238,7 +241,7 @@ class TensorboardHook(LoggingHook):
 
                 if np.isscalar(m):
                     self.writer.add_scalar(
-                        "metrics/%s" % metric.name, float(m), trainer.epoch
+                        "metrics/%s" % metric.name, float(m), trainer.step
                     )
                 elif m.ndim == 2:
                     if trainer.epoch % self.img_every_n_epochs == 0:
@@ -261,7 +264,7 @@ class TensorboardHook(LoggingHook):
                         plt.close(fig)
 
                         self.writer.add_image(
-                            "metrics/%s" % metric.name, np_image, trainer.epoch
+                            "metrics/%s" % metric.name, np_image, trainer.step
                         )
 
             if self.log_validation_loss:
@@ -270,7 +273,7 @@ class TensorboardHook(LoggingHook):
             if self.log_histogram:
                 for name, param in trainer._model.named_parameters():
                     self.writer.add_histogram(
-                        name, param.detach().cpu().numpy(), trainer.epoch
+                        name, param.detach().cpu().numpy(), trainer.step
                     )
 
     def on_train_ends(self, trainer):

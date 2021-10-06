@@ -190,33 +190,76 @@ class AtomsLoader(DataLoader):
             single_atom_ref = {prop: None for prop in property_names}
 
         with torch.no_grad():
-            statistics = {
-                prop: StatisticsAccumulator(batch=True) for prop in property_names
-            }
-            logger.info("statistics will be calculated...")
 
+            # get number of targets
+            prop = property_names[0]    # assume that only one property name is defined
             for row in self:
-                for prop in property_names:
-                    self._update_statistic(
-                        divide_by_atoms[prop],
-                        single_atom_ref[prop],
-                        prop,
-                        row,
-                        statistics[prop],
-                    )
+                y_dummy = row[prop]
+                n_targets = y_dummy.shape[1]
+                #try:
+                #    n_targets = y_dummy.shape[1]
+                #except:
+                #    n_targets = 1
+                break
 
-            means = {prop: s.get_mean() for prop, s in statistics.items()}
-            stddevs = {prop: s.get_stddev() for prop, s in statistics.items()}
+            if n_targets > 1:
+                statistics = {
+                    prop: StatisticsAccumulator(batch=True) for prop in [str(i) for i in range(n_targets)]
+                }
+                logger.info("statistics will be calculated...")
+
+                for row in self:
+                    for prop in property_names:
+                        for idx in range(n_targets):
+                            self._update_statistic(
+                                divide_by_atoms[prop],
+                                single_atom_ref[prop],
+                                prop,
+                                row,
+                                statistics[str(idx)],
+                                idx,
+                            )
+
+                means = {prop: s.get_mean() for prop, s in statistics.items()}
+                stddevs = {prop: s.get_stddev() for prop, s in statistics.items()}
+
+                # define vector mean and stddev
+                prop = property_names[0]    # assume that only one property name is defined
+                means = {prop: torch.tensor([v for v in means.values()])}
+                stddevs = {prop: torch.tensor([v for v in stddevs.values()])}
+
+            else:
+                statistics = {
+                    prop: StatisticsAccumulator(batch=True) for prop in property_names
+                }
+                logger.info("statistics will be calculated...")
+
+                for row in self:
+                    for prop in property_names:
+
+                        self._update_statistic(
+                            divide_by_atoms[prop],
+                            single_atom_ref[prop],
+                            prop,
+                            row,
+                            statistics[prop],
+                        )
+
+                means = {prop: s.get_mean() for prop, s in statistics.items()}
+                stddevs = {prop: s.get_stddev() for prop, s in statistics.items()}
 
         return means, stddevs
 
     def _update_statistic(
-        self, divide_by_atoms, single_atom_ref, property_name, row, statistics
+        self, divide_by_atoms, single_atom_ref, property_name, row, statistics, idx=None
     ):
         """
         Helper function to update iterative mean / stddev statistics
         """
-        property_value = row[property_name]
+        if idx is not None:
+            property_value = row[property_name][:, idx].unsqueeze(1)
+        else:
+            property_value = row[property_name]
         if single_atom_ref is not None:
             z = row["_atomic_numbers"]
             p0 = torch.sum(torch.from_numpy(single_atom_ref[z]).float(), dim=1)

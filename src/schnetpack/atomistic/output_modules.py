@@ -83,6 +83,7 @@ class Atomwise(nn.Module):
         stddev=None,
         atomref=None,
         outnet=None,
+        no_scaleshift=False,
     ):
         super(Atomwise, self).__init__()
 
@@ -93,6 +94,7 @@ class Atomwise(nn.Module):
         self.derivative = derivative
         self.negative_dr = negative_dr
         self.stress = stress
+        self.no_scaleshift = no_scaleshift
 
         mean = torch.FloatTensor([0.0]) if mean is None else mean
         stddev = torch.FloatTensor([1.0]) if stddev is None else stddev
@@ -136,13 +138,20 @@ class Atomwise(nn.Module):
 
         # run prediction
         yi = self.out_net(inputs)
-        yi = self.standardize(yi)
+        if self.no_scaleshift:
+            pass
+        else:
+            yi = self.standardize(yi)
 
         if self.atomref is not None:
             y0 = self.atomref(atomic_numbers)
             yi = yi + y0
 
         y = self.atom_pool(yi, atom_mask)
+
+        # for energy levels (sort eig.values)
+        #if y.shape[1] > 1:
+        #    y, _ = torch.sort(y, descending=False, dim=1)
 
         # collect results
         result = {self.property: y}

@@ -58,6 +58,7 @@ def get_trainer(args, model, train_loader, val_loader, metrics):
         checkpoint_interval=args.checkpoint_interval,
         keep_n_checkpoints=args.keep_n_checkpoints,
         hooks=hooks,
+        validation_interval=args.validation_interval,
     )
     return trainer
 
@@ -111,7 +112,10 @@ def get_loss_fn(args):
 
 def simple_loss_fn(args):
     def loss(batch, result):
-        diff = batch[args.property] - result[args.property]
+        if batch[args.property].shape[1] > 1:
+            diff = batch[args.property][:, 1:-1] - result[args.property][:, 1:-1]
+        else:
+            diff = batch[args.property] - result[args.property]
         diff = diff ** 2
         err_sq = torch.mean(diff)
         return err_sq

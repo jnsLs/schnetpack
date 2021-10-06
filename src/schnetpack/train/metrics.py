@@ -147,7 +147,10 @@ class MeanSquaredError(Metric):
         self.n_entries = 0.0
 
     def _get_diff(self, y, yp):
-        diff = y - yp
+        if y.shape[1] > 1:
+            diff = y[:, 1:-1] - yp[:, 1:-1]
+        else:
+            diff = y - yp
         if self.bias_correction is not None:
             diff += self.bias_correction
         return diff
@@ -253,7 +256,10 @@ class MeanAbsoluteError(Metric):
         self.n_entries = 0.0
 
     def _get_diff(self, y, yp):
-        diff = y - yp
+        if y.shape[1] > 1:
+            diff = y[:, 1:-1] - yp[:, 1:-1]
+        else:
+            diff = y - yp
         if self.bias_correction is not None:
             diff += self.bias_correction
         return diff

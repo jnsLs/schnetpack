@@ -109,7 +109,6 @@ def get_mode_parsers():
         help="Minimal learning rate (default: %(default)s)",
         default=1e-6,
     )
-
     train_parser.add_argument(
         "--logger",
         help="Choose logger for training process (default: %(default)s)",
@@ -140,6 +139,27 @@ def get_mode_parsers():
         help="Number of checkpoints that will be stored (default: %(default)s)",
         default=3,
     )
+    train_parser.add_argument(
+        "--validation_interval",
+        type=int,
+        help="Number of iterations until model is validated (default: %(default)s)",
+        default=1000,
+    )
+    train_parser.add_argument(
+        "--scaleshift_mean_path",
+        type=str,
+        help="path of mean (lrp reference value)",
+        default=None,
+    )
+    train_parser.add_argument(
+        "--no_scaleshift",
+        help="train SchNet without scaleshift",
+        action="store_true",
+    )
+
+    type = int,
+    nargs = 2,
+    default = [None, None],
 
     # evaluation parser
     eval_parser = argparse.ArgumentParser(add_help=False, parents=[mode_parser])
@@ -182,6 +202,9 @@ def get_model_parsers():
         "--features", type=int, help="Size of atom-wise representation", default=128
     )
     schnet_parser.add_argument(
+        "--n_out", type=int, help="number of targets", default=1
+    )
+    schnet_parser.add_argument(
         "--interactions", type=int, help="Number of interaction blocks", default=6
     )
     schnet_parser.add_argument(
@@ -195,6 +218,13 @@ def get_model_parsers():
         type=int,
         default=50,
         help="Number of Gaussians to expand distances (default: %(default)s)",
+    )
+    schnet_parser.add_argument(
+        "--activation",
+        type=str,
+        default = "ssp",
+        choices = ["relu", "none", "ssp"],
+        help = "interaction activation (default: %(default)s)",
     )
 
     wacsf_parser = argparse.ArgumentParser(add_help=False, parents=[model_parser])

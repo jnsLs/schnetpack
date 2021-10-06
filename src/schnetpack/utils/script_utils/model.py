@@ -12,6 +12,7 @@ def get_representation(args, train_loader=None):
     if args.model == "schnet":
 
         cutoff_network = spk.nn.cutoff.get_cutoff_by_string(args.cutoff_function)
+        activation = spk.nn.activations.get_activation_by_string(args.activation)
 
         return spk.representation.SchNet(
             n_atom_basis=args.features,
@@ -20,6 +21,7 @@ def get_representation(args, train_loader=None):
             cutoff=args.cutoff,
             n_gaussians=args.num_gaussians,
             cutoff_network=cutoff_network,
+            int_activation=activation,
         )
 
     elif args.model == "wacsf":
@@ -83,6 +85,7 @@ def get_output_module(args, representation, mean, stddev, atomref):
     negative_dr = spk.utils.get_negative_dr(args)
     contributions = spk.utils.get_contributions(args)
     stress = spk.utils.get_stress(args)
+    activation = spk.nn.activations.get_activation_by_string(args.activation)
     if args.dataset == "md17" and not args.ignore_forces:
         derivative = spk.datasets.MD17.forces
     output_module_str = spk.utils.get_module_str(args)
@@ -94,6 +97,7 @@ def get_output_module(args, representation, mean, stddev, atomref):
             stddev=stddev[args.property],
             property=args.property,
             contributions=contributions,
+            activation=activation,
         )
     elif output_module_str == "electronic_spatial_extent":
         return spk.atomistic.output_modules.ElectronicSpatialExtent(
@@ -106,6 +110,7 @@ def get_output_module(args, representation, mean, stddev, atomref):
     elif output_module_str == "atomwise":
         return spk.atomistic.output_modules.Atomwise(
             args.features,
+            args.n_out,
             aggregation_mode=spk.utils.get_pooling_mode(args),
             mean=mean[args.property],
             stddev=stddev[args.property],
@@ -115,6 +120,8 @@ def get_output_module(args, representation, mean, stddev, atomref):
             negative_dr=negative_dr,
             contributions=contributions,
             stress=stress,
+            activation=activation,
+            no_scaleshift=args.no_scaleshift,
         )
     elif output_module_str == "polarizability":
         return spk.atomistic.output_modules.Polarizability(

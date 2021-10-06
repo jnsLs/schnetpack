@@ -2,6 +2,7 @@ import os
 import sys
 import numpy as np
 import torch
+import time
 
 
 class Trainer:
@@ -35,7 +36,7 @@ class Trainer:
         validation_loader,
         keep_n_checkpoints=3,
         checkpoint_interval=10,
-        validation_interval=1,
+        validation_interval=1000,
         hooks=[],
         loss_is_normalized=True,
     ):
@@ -55,6 +56,9 @@ class Trainer:
 
         self.loss_fn = loss_fn
         self.optimizer = optimizer
+
+        self.lr = self.optimizer.param_groups[0]["lr"]
+        self.sigm = torch.nn.Sigmoid()
 
         if os.path.exists(self.checkpoint_path):
             self.restore_checkpoint()
@@ -164,6 +168,8 @@ class Trainer:
                 # increase number of epochs by 1
                 self.epoch += 1
 
+                #self.optimizer.param_groups[0]["lr"] = self.lr * self.sigm(torch.tensor([self.epoch * 0.05 - 10.])).item()
+
                 for h in self.hooks:
                     h.on_epoch_begin(self)
 
@@ -172,13 +178,12 @@ class Trainer:
                     self.epoch -= 1
                     break
 
-                # perform training epoch
-                #                if progress:
-                #                    train_iter = tqdm(self.train_loader)
-                #                else:
+                # iteration
                 train_iter = self.train_loader
-
                 for train_batch in train_iter:
+
+                    # training
+
                     self.optimizer.zero_grad()
 
                     for h in self.hooks:
@@ -199,49 +204,51 @@ class Trainer:
                     if self._stop:
                         break
 
-                if self.epoch % self.checkpoint_interval == 0:
-                    self.store_checkpoint()
 
-                # validation
-                if self.epoch % self.validation_interval == 0 or self._stop:
-                    for h in self.hooks:
-                        h.on_validation_begin(self)
+                    # validation
 
-                    val_loss = 0.0
-                    n_val = 0
-                    for val_batch in self.validation_loader:
-                        # append batch_size
-                        vsize = list(val_batch.values())[0].size(0)
-                        n_val += vsize
+                    if self.step % self.validation_interval == 0:
+
+                        self.store_checkpoint()
 
                         for h in self.hooks:
-                            h.on_validation_batch_begin(self)
+                            h.on_validation_begin(self)
 
-                        # move input to gpu, if needed
-                        val_batch = {k: v.to(device) for k, v in val_batch.items()}
+                        val_loss = 0.0
+                        n_val = 0
+                        for val_batch in self.validation_loader:
+                            # append batch_size
+                            vsize = list(val_batch.values())[0].size(0)
+                            n_val += vsize
 
-                        val_result = self._model(val_batch)
-                        val_batch_loss = (
-                            self.loss_fn(val_batch, val_result).data.cpu().numpy()
-                        )
+                            for h in self.hooks:
+                                h.on_validation_batch_begin(self)
+
+                            # move input to gpu, if needed
+                            val_batch = {k: v.to(device) for k, v in val_batch.items()}
+
+                            val_result = self._model(val_batch)
+                            val_batch_loss = (
+                                self.loss_fn(val_batch, val_result).data.cpu().numpy()
+                            )
+                            if self.loss_is_normalized:
+                                val_loss += val_batch_loss * vsize
+                            else:
+                                val_loss += val_batch_loss
+
+                            for h in self.hooks:
+                                h.on_validation_batch_end(self, val_batch, val_result)
+
+                        # weighted average over batches
                         if self.loss_is_normalized:
-                            val_loss += val_batch_loss * vsize
-                        else:
-                            val_loss += val_batch_loss
+                            val_loss /= n_val
+
+                        if self.best_loss > val_loss:
+                            self.best_loss = val_loss
+                            torch.save(self._model, self.best_model)
 
                         for h in self.hooks:
-                            h.on_validation_batch_end(self, val_batch, val_result)
-
-                    # weighted average over batches
-                    if self.loss_is_normalized:
-                        val_loss /= n_val
-
-                    if self.best_loss > val_loss:
-                        self.best_loss = val_loss
-                        torch.save(self._model, self.best_model)
-
-                    for h in self.hooks:
-                        h.on_validation_end(self, val_loss)
+                            h.on_validation_end(self, val_loss)
 
                 for h in self.hooks:
                     h.on_epoch_end(self)
