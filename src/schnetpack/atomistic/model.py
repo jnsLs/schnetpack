@@ -246,7 +246,8 @@ class SelectedAtomsMAE(torchmetrics.regression.MeanAbsoluteError):
         super().__init__()
 
         if considered_atoms is None:
-            self.considered_atoms = [_ for _ in range(1008, 1046)]
+            # self.considered_atoms = [_ for _ in range(1008, 1046)]
+            self.considered_atoms = [_ for _ in range(144, 182)]
         else:
             self.considered_atoms = considered_atoms
 
@@ -271,7 +272,8 @@ class SelectedAtomsMSELoss(nn.MSELoss):
         super().__init__()
 
         if considered_atoms is None:
-            self.considered_atoms = [_ for _ in range(1008, 1046)]
+            # self.considered_atoms = [_ for _ in range(1008, 1046)]
+            self.considered_atoms = [_ for _ in range(144, 182)]
         else:
             self.considered_atoms = considered_atoms
 
