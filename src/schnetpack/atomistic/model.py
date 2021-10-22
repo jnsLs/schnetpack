@@ -20,8 +20,10 @@ from torchmetrics.functional.regression.mean_absolute_error import (
 import schnetpack as spk
 from torchmetrics import Metric
 
+from torch.nn import functional as F
 
-__all__ = ["AtomisticModel", "ModelOutput", "SelectedAtomsMAE"]
+
+__all__ = ["AtomisticModel", "ModelOutput", "SelectedAtomsMAE", "SelectedAtomsMSELoss"]
 
 
 class ModelOutput(nn.Module):
@@ -261,3 +263,17 @@ class SelectedAtomsMAE(torchmetrics.regression.MeanAbsoluteError):
 
         self.sum_abs_error += sum_abs_error
         self.total += n_obs
+
+
+class SelectedAtomsMSELoss(nn.MSELoss):
+
+    def __init__(self, considered_atoms=None):
+        super().__init__()
+
+        if considered_atoms is None:
+            self.considered_atoms = [_ for _ in range(1008, 1046)]
+        else:
+            self.considered_atoms = considered_atoms
+
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        return F.mse_loss(input[:, self.considered_atoms], target[:, self.considered_atoms], reduction=self.reduction)
