@@ -12,6 +12,7 @@ __all__ = [
     "SubtractCenterOfGeometry",
     "AddOffsets",
     "RemoveOffsets",
+    "ZeroSilverForces"
 ]
 
 
@@ -182,3 +183,24 @@ class AddOffsets(Transform):
             x[self._property] -= y0
 
         return x
+
+
+class ZeroSilverForces(Transform):
+    """
+    Set forces of silver atoms to zero
+    """
+
+    is_preprocessor: bool = True
+    is_postprocessor: bool = True
+
+    def forward(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        results: Dict[str, torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+
+        at_nums = inputs[structure.Z]
+        if results is not None:
+            pass
+
+        return inputs

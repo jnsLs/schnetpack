@@ -271,11 +271,16 @@ class SelectedAtomsMSELoss(nn.MSELoss):
     def __init__(self, considered_atoms=None):
         super().__init__()
 
-        if considered_atoms is None:
-            # self.considered_atoms = [_ for _ in range(1008, 1046)]
-            self.considered_atoms = [_ for _ in range(144, 182)]
-        else:
-            self.considered_atoms = considered_atoms
-
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return F.mse_loss(input[:, self.considered_atoms], target[:, self.considered_atoms], reduction=self.reduction)
+
+        batch_size = input.shape[0] // 238
+        if batch_size - input.shape[0] / 238 > 1e-9:
+            raise ImportError("each sample must contain 238 nodes")
+        considered_atoms = []
+        for spl_idx in range(batch_size):
+            considered_atoms += [_ for _ in range(144+238*spl_idx, 182+238*spl_idx)]
+
+        new_input = input[considered_atoms]
+        new_target = target[considered_atoms]
+
+        return F.mse_loss(new_input, new_target, reduction=self.reduction)
