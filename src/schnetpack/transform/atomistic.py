@@ -190,7 +190,7 @@ class ZeroSilverForces(Transform):
     Set forces of silver atoms to zero
     """
 
-    is_preprocessor: bool = True
+    is_preprocessor: bool = False
     is_postprocessor: bool = True
 
     def forward(
@@ -199,8 +199,7 @@ class ZeroSilverForces(Transform):
         results: Dict[str, torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
 
-        at_nums = inputs[structure.Z]
-        if results is not None:
-            pass
+        non_silver_atoms = (inputs[structure.Z] != 47)
+        results["forces"] *= non_silver_atoms.unsqueeze(1).repeat(1, 3)
 
-        return inputs
+        return results
