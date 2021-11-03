@@ -9,7 +9,7 @@ from schnetpack.nn.activations import shifted_softplus
 
 import schnetpack.nn as snn
 
-__all__ = ["SchNet"]
+__all__ = ["SchNet", "SchNetInteraction"]
 
 
 class SchNetInteraction(nn.Module):
@@ -153,4 +153,5 @@ class SchNet(nn.Module):
             v = interaction(x, f_ij, idx_i, idx_j, rcut_ij)
             x = x + v
 
-        return {"scalar_representation": x}
+        inputs["scalar_representation"] = x
+        return inputs

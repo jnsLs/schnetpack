@@ -1,9 +1,0 @@
-defaults:
-  - representation: painn
-  - optimizer: adam
-  - scheduler: reduce_on_plateau
-
-_target_: schnetpack.atomistic.AtomisticModel
-
-output_modules: ???
-outputs: ???

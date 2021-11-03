@@ -84,9 +84,6 @@ class AtomsDataModule(pl.LightningDataModule):
             val_transforms=val_transforms or copy(transforms) or [],
             test_transforms=test_transforms or copy(transforms) or [],
         )
-        self._init_transforms(self.train_transforms)
-        self._init_transforms(self.val_transforms)
-        self._init_transforms(self.test_transforms)
 
         self.batch_size = batch_size
         self.val_batch_size = val_batch_size or test_batch_size or batch_size
@@ -114,10 +111,6 @@ class AtomsDataModule(pl.LightningDataModule):
         self._train_dataset = None
         self._val_dataset = None
         self._test_dataset = None
-
-    def _init_transforms(self, transforms):
-        for t in transforms:
-            t.preprocessor()
 
     def setup(self, stage: Optional[str] = None):
         # check whether data needs to be copied
@@ -230,15 +223,8 @@ class AtomsDataModule(pl.LightningDataModule):
                     + "the sizes of the training and validation partitions need to be set!"
                 )
 
-            if self.num_test is None:
-                self.num_test = len(self.dataset) - self.num_train - self.num_val
-            lengths = [self.num_train, self.num_val, self.num_test]
-            offsets = torch.cumsum(torch.tensor(lengths), dim=0)
-            indices = torch.randperm(sum(lengths)).tolist()
-            self.train_idx, self.val_idx, self.test_idx = [
-                indices[offset - length : offset]
-                for offset, length in zip(offsets, lengths)
-            ]
+            self.train_idx, self.val_idx, self.test_idx = self._split_data()
+
             if self.split_file is not None:
                 np.savez(
                     self.split_file,
@@ -246,6 +232,19 @@ class AtomsDataModule(pl.LightningDataModule):
                     val_idx=self.val_idx,
                     test_idx=self.test_idx,
                 )
+
+    def _split_data(self):
+        if self.num_test is None:
+            self.num_test = len(self.dataset) - self.num_train - self.num_val
+
+        lengths = [self.num_train, self.num_val, self.num_test]
+        offsets = torch.cumsum(torch.tensor(lengths), dim=0)
+        indices = torch.randperm(sum(lengths)).tolist()
+        train_idx, val_idx, test_idx = [
+            indices[offset - length : offset]
+            for offset, length in zip(offsets, lengths)
+        ]
+        return train_idx, val_idx, test_idx
 
     def setup_transforms(self):
         # setup transforms

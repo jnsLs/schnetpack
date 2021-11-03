@@ -30,7 +30,6 @@ class SubtractCenterOfMass(Transform):
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
-        results: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         masses = torch.tensor(atomic_masses[inputs[structure.Z]])
         inputs[structure.position] -= (
@@ -50,7 +49,6 @@ class SubtractCenterOfGeometry(Transform):
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
-        results: Dict[str, torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         inputs[structure.position] -= inputs[structure.position].mean(0)
         return inputs
@@ -103,17 +101,14 @@ class RemoveOffsets(Transform):
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
-        results: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
-        x = inputs if self.mode == "pre" else results
-
         if self.remove_mean:
-            x[self._property] -= self.mean * inputs[structure.n_atoms]
+            inputs[self._property] -= self.mean * inputs[structure.n_atoms]
 
         if self.remove_atomrefs:
-            x[self._property] -= torch.sum(self.atomref[inputs[structure.Z]])
+            inputs[self._property] -= torch.sum(self.atomref[inputs[structure.Z]])
 
-        return x
+        return inputs
 
 
 class AddOffsets(Transform):
@@ -161,14 +156,9 @@ class AddOffsets(Transform):
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
-        results: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
-        if results is None:
-            results = {}
-        x = inputs if self.mode == "pre" else results
-
         if self.add_mean:
-            x[self._property] += self.mean * inputs[structure.n_atoms]
+            inputs[self._property] += self.mean * inputs[structure.n_atoms]
 
         if self.add_atomrefs:
             idx_m = inputs[structure.idx_m]
@@ -180,9 +170,9 @@ class AddOffsets(Transform):
             if not self.is_extensive:
                 y0 /= inputs[structure.n_atoms]
 
-            x[self._property] -= y0
+            inputs[self._property] -= y0
 
-        return x
+        return inputs
 
 
 class ZeroSilverForces(Transform):
