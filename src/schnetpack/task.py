@@ -30,6 +30,7 @@ class ModelOutput(nn.Module):
         loss_weight: float = 1.0,
         metrics: Optional[Dict[str, Metric]] = None,
         target_name: Optional[str] = None,
+        preprocessing: Optional[nn.Module] = None,
     ):
         """
         Args:
@@ -46,6 +47,7 @@ class ModelOutput(nn.Module):
         self.loss_fn = loss_fn
         self.loss_weight = loss_weight
         self.metrics = nn.ModuleDict(metrics)
+        self.preprocessing = preprocessing
 
 
 class AtomisticTask(pl.LightningModule):
@@ -96,6 +98,13 @@ class AtomisticTask(pl.LightningModule):
     def loss_fn(self, pred, batch):
         loss = 0.0
         for output in self.outputs:
+
+            # preprocessing
+            if output.preprocessing is not None:
+                if output.property != output.target_name:
+                    raise ValueError("property name is not consistent in results and input dict")
+                pred, batch = output.preprocessing(pred, batch, output.target_name)
+
             loss_p = output.loss_weight * output.loss_fn(
                 pred[output.property], batch[output.target_name]
             )
@@ -223,3 +232,24 @@ class SelectedAtomsMSELoss(nn.MSELoss):
         new_target = target[considered_atoms]
 
         return F.mse_loss(new_input, new_target, reduction=self.reduction)
+
+
+class ConsiderOnlySelectedAtoms(nn.Module):
+
+    def __init__(self, considered_atoms_path):
+        super().__init__()
+        self.considered_atoms = torch.load(considered_atoms_path)
+
+    def forward(self, pred, batch, target_name):
+
+        device = "cuda" if pred["_n_atoms"].is_cuda else "cpu"
+        self.considered_atoms = self.considered_atoms.to(device=device)
+
+        considered_atoms = []
+        for spl_idx, n_atoms in enumerate(pred["_n_atoms"]):
+            considered_atoms += (self.considered_atoms + n_atoms * spl_idx).tolist()
+
+        pred[target_name] = pred[target_name][considered_atoms]
+        batch[target_name] = batch[target_name][considered_atoms]
+
+        return pred, batch
