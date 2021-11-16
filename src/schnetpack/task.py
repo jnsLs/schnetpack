@@ -16,7 +16,7 @@ from copy import deepcopy, copy
 
 from schnetpack.model.base import AtomisticModel
 
-__all__ = ["ModelOutput", "AtomisticTask", "SelectedAtomsMAE", "SelectedAtomsMSELoss"]
+__all__ = ["ModelOutput", "AtomisticTask"]
 
 
 class ModelOutput(nn.Module):
