@@ -1,5 +1,6 @@
 import numpy as np
 from schnetpack import properties
+import ase
 
 __all__ = ["Calculator", "DummyCalculator", "NNCalculator"]
 
@@ -13,6 +14,8 @@ class TrajLogger:
         self.e = []
         self.f = []
         self.s = []
+        self.fu = []
+        self.eu = []
         self.calculator_type = []
         self.structures = []
 
@@ -20,15 +23,17 @@ class TrajLogger:
         self.e = []
         self.f = []
         self.s = []
+        self.fu = []
+        self.eu = []
         self.calculator_type = []
         self.structures = []
 
-    def __call__(self, atoms, energy, forces, stress, calculator_type):
+    def __call__(self, atoms, energy, forces, energy_uncertainty, forces_uncertainty):
         print("called logger")
         self.e.append(energy)
         self.f.append(forces)
-        self.s.append(stress)
-        self.calculator_type.append(calculator_type)
+        self.eu.append(energy_uncertainty)
+        self.fu.append(forces_uncertainty)
         atms_copy = atoms.copy()
         atms_copy.calc = None
         self.structures.append(atms_copy)
@@ -38,7 +43,9 @@ class TrajLogger:
         results = {
             properties.energy: self.e.copy(),
             properties.forces: self.f.copy(),
-            properties.position: self.structures.copy(),
+            "energy_uncertainty": self.eu.copy(),
+            "forces_uncertainty": self.fu.copy(),
+            "structures": self.structures.copy(),
             "calculator_type": self.calculator_type.copy(),
         }
         self.reset()
@@ -58,6 +65,7 @@ class Calculator:
     def calculation_required(
         self,
         atoms,
+        properties=None
     ):
         if self.atoms is None or not self.atoms == atoms:
             return True
@@ -117,12 +125,24 @@ class NNCalculator(Calculator):
         model,
         atoms_converter,
         device="cpu",
+        logging=True,
     ):
         super(NNCalculator, self).__init__()
 
         self.model = model
         self.device = device
         self.atoms_converter = atoms_converter
+        self.logging = logging
+
+    def log(self, atoms: ase.Atoms):
+        if self.logging:
+            self.traj_logger(
+                atoms=atoms,
+                energy=self.results[properties.energy],
+                forces=self.results[properties.forces],
+                energy_uncertainty=self.results["energy_uncertainty"],
+                forces_uncertainty=self.results["forces_uncertainty"],
+            )
 
     def calculate(
         self,
@@ -142,11 +162,14 @@ class NNCalculator(Calculator):
         self.results = {
             properties.energy: means[properties.energy].detach().cpu().squeeze().numpy(),
             properties.forces: means[properties.forces].detach().cpu().squeeze().numpy(),
+            "energy_uncertainty": stds[properties.energy].detach().cpu().squeeze().numpy(),
             "forces_uncertainty": stds[properties.forces].detach().cpu().squeeze().numpy(),
         }
 
         # update _atoms
         self.atoms = atoms.copy()
+
+        self.log(atoms)
 
     def get_uncertainties(self, atoms):
         if self.calculation_required(atoms):

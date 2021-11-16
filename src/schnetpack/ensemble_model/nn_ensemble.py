@@ -1,3 +1,4 @@
+from copy import deepcopy
 import torch.nn as nn
 import torch
 from typing import Dict, Optional, List
@@ -28,7 +29,8 @@ class NNEnsemble(LightningModule):
             results[p] = []
 
         for model in self.models:
-            predictions = model(x)
+            x_tmp = deepcopy(x)
+            predictions = model(x_tmp)
             for prop, values in predictions.items():
                 if prop in self.properties:
                     results[prop].append(values.detach())
