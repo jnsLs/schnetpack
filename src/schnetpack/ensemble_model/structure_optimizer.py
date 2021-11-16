@@ -25,7 +25,6 @@ class ASEStructureOptimizer:
     def __init__(
         self,
         calculator,
-        workdir,
         max_steps: int = 300,
         force_th: float = 0.05,
         optimizer_class: type = LBFGS,
@@ -39,7 +38,6 @@ class ASEStructureOptimizer:
         self.optimizer_class = optimizer_class
         self.allow_unconverged = allow_unconverged
         self.timeout_limit = timeout_limit
-        self.workdir = workdir
 
     def relax(
         self,
@@ -56,14 +54,7 @@ class ASEStructureOptimizer:
         if type(atoms) == Structure:
             atoms = AseAtomsAdaptor.get_atoms(atoms)
 
-        name = "optimization"
-        optimize_file = os.path.join(self.workdir, name)
-        ase_optimiser = self.optimizer_class(
-            atoms,
-            force_consistent=False,
-            trajectory="{:s}.traj".format(optimize_file),
-            restart="{:s}.pkl".format(optimize_file)
-        )
+        ase_optimiser = self.optimizer_class(atoms, force_consistent=False)
         atoms.set_calculator(self.calculator)
 
         # start run with timeout
@@ -73,8 +64,6 @@ class ASEStructureOptimizer:
             steps=ase_optimiser.nsteps + self.max_steps, fmax=self.force_th
         )
         signal.alarm(0)
-
-
 
         # exception if not converged
         #if not converged and not self.allow_unconverged:

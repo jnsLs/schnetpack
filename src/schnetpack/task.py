@@ -12,6 +12,8 @@ import torch
 from torch import nn as nn
 from torchmetrics import Metric
 
+from copy import deepcopy, copy
+
 from schnetpack.model.base import AtomisticModel
 
 __all__ = ["ModelOutput", "AtomisticTask", "SelectedAtomsMAE", "SelectedAtomsMSELoss"]
@@ -99,24 +101,37 @@ class AtomisticTask(pl.LightningModule):
         loss = 0.0
         for output in self.outputs:
 
+            pred_tmp = copy(pred)
+            batch_tmp = copy(batch)
+
             # preprocessing
             if output.preprocessing is not None:
                 if output.property != output.target_name:
                     raise ValueError("property name is not consistent in results and input dict")
-                pred, batch = output.preprocessing(pred, batch, output.target_name)
+                pred_tmp, batch_tmp = output.preprocessing(pred_tmp, batch_tmp, output.target_name)
 
             loss_p = output.loss_weight * output.loss_fn(
-                pred[output.property], batch[output.target_name]
+                pred_tmp[output.property], batch_tmp[output.target_name]
             )
             loss += loss_p
         return loss
 
     def log_metrics(self, pred, targets, subset):
         for output in self.outputs:
+
+            pred_tmp = copy(pred)
+            targets_tmp = copy(targets)
+
+            # preprocessing
+            if output.preprocessing is not None:
+                if output.property != output.target_name:
+                    raise ValueError("property name is not consistent in results and input dict")
+                pred_tmp, targets_tmp = output.preprocessing(pred_tmp, targets_tmp, output.target_name)
+
             for metric_name, pmetric in output.metrics.items():
                 self.log(
                     f"{subset}_{output.property}_{metric_name}",
-                    pmetric(pred[output.property], targets[output.target_name]),
+                    pmetric(pred_tmp[output.property], targets_tmp[output.target_name]),
                     on_step=False,
                     on_epoch=True,
                     prog_bar=False,
@@ -130,7 +145,7 @@ class AtomisticTask(pl.LightningModule):
         loss = self.loss_fn(pred, targets)
 
         self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
-        self.log_metrics(targets, pred, "train")
+        self.log_metrics(pred, targets, "train")
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -142,7 +157,7 @@ class AtomisticTask(pl.LightningModule):
         loss = self.loss_fn(pred, targets)
 
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log_metrics(targets, pred, "val")
+        self.log_metrics(pred, targets, "val")
 
         return {"val_loss": loss}
 
@@ -155,7 +170,7 @@ class AtomisticTask(pl.LightningModule):
         loss = self.loss_fn(pred, targets)
 
         self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log_metrics(targets, pred, "test")
+        self.log_metrics(pred, targets, "test")
         return {"test_loss": loss}
 
     def configure_optimizers(self):
@@ -185,53 +200,6 @@ class AtomisticTask(pl.LightningModule):
         script = super().to_torchscript(file_path, method, example_inputs, **kwargs)
         self.inference_mode = imode
         return script
-
-
-class SelectedAtomsMAE(torchmetrics.regression.MeanAbsoluteError):
-
-    def __init__(self, considered_atoms=None):
-
-        super().__init__()
-
-        if considered_atoms is None:
-            # self.considered_atoms = [_ for _ in range(1008, 1046)]
-            self.considered_atoms = [_ for _ in range(144, 182)]
-        else:
-            self.considered_atoms = considered_atoms
-
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets.
-
-        Args:
-            preds: Predictions from model
-            target: Ground truth values
-        """
-
-        sum_abs_error, n_obs = _mean_absolute_error_update(preds[self.considered_atoms], target[self.considered_atoms])
-
-        self.sum_abs_error += sum_abs_error
-        self.total += n_obs
-
-
-class SelectedAtomsMSELoss(nn.MSELoss):
-
-    def __init__(self, considered_atoms=None):
-        super().__init__()
-
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
-
-        batch_size = input.shape[0] // 238
-        if batch_size - input.shape[0] / 238 > 1e-9:
-            raise ImportError("each sample must contain 238 nodes")
-        considered_atoms = []
-        for spl_idx in range(batch_size):
-            considered_atoms += [_ for _ in range(144+238*spl_idx, 182+238*spl_idx)]
-
-        new_input = input[considered_atoms]
-        new_target = target[considered_atoms]
-
-        return F.mse_loss(new_input, new_target, reduction=self.reduction)
 
 
 class ConsiderOnlySelectedAtoms(nn.Module):
