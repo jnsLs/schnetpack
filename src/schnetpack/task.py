@@ -202,7 +202,7 @@ class AtomisticTask(pl.LightningModule):
         return script
 
 
-class ConsiderOnlySelectedAtoms(nn.Module):
+class ConsiderOnlySelectedAtomsOLD(nn.Module):
 
     def __init__(self, considered_atoms_path):
         super().__init__()
@@ -217,6 +217,22 @@ class ConsiderOnlySelectedAtoms(nn.Module):
         for spl_idx, n_atoms in enumerate(pred["_n_atoms"]):
             considered_atoms += (self.considered_atoms + n_atoms * spl_idx).tolist()
 
+        pred[target_name] = pred[target_name][considered_atoms]
+        batch[target_name] = batch[target_name][considered_atoms]
+
+        return pred, batch
+
+
+class ConsiderOnlySelectedAtoms(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred, batch, target_name):
+
+        considered_atoms = pred["considered_atoms"].nonzero()[:, 0]
+
+        # drop neglected atoms
         pred[target_name] = pred[target_name][considered_atoms]
         batch[target_name] = batch[target_name][considered_atoms]
 
