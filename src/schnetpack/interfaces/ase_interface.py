@@ -24,6 +24,7 @@ from ase.md.velocitydistribution import (
     Stationary,
     ZeroRotation,
 )
+from ase.optimize.optimize import Optimizer
 from ase.optimize import QuasiNewton
 from ase.vibrations import Vibrations
 
@@ -217,10 +218,11 @@ class AseInterface:
 
     def __init__(
         self,
-        molecule_path: str,
+        molecule,
         working_dir: str,
         model: schnetpack.model.AtomisticModel,
         converter: AtomsConverter,
+        optimizer_class: type = QuasiNewton,
         energy: str = "energy",
         forces: str = "forces",
         stress: str = "stress",
@@ -230,7 +232,7 @@ class AseInterface:
     ):
         """
         Args:
-            molecule_path: Path to initial geometry
+            molecule_path: molecule as ase atoms object
             working_dir: Path to directory where files should be stored
             model: Trained model
             neighbor_list: neighbor list for computing interatomic distances.
@@ -249,7 +251,10 @@ class AseInterface:
             os.makedirs(self.working_dir)
 
         # Load the molecule
-        self.molecule = read(molecule_path)
+        self.molecule = molecule
+
+        # Set up optimizer
+        self.optimizer_class = optimizer_class
 
         # Set up calculator
         calculator = SpkCalculator(
@@ -402,7 +407,7 @@ class AseInterface:
         """
         name = "optimization"
         optimize_file = os.path.join(self.working_dir, name)
-        optimizer = QuasiNewton(
+        optimizer = self.optimizer_class(
             self.molecule,
             trajectory="{:s}.traj".format(optimize_file),
             restart="{:s}.pkl".format(optimize_file),
