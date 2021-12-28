@@ -146,6 +146,9 @@ class NeuralNetworkPotential(AtomisticModel):
 
         self.collect_derivatives()
 
+        if self.input_dtype == 'torch.float64':
+            self.double()
+
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         # inititalize derivatives for response properties
         inputs = self.initialize_derivatives(inputs)
