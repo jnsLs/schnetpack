@@ -15,6 +15,7 @@ import os
 
 import ase
 from ase import units
+from ase.constraints import FixAtoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.io import read, write
 from ase.io.trajectory import Trajectory
@@ -218,7 +219,7 @@ class AseInterface:
 
     def __init__(
         self,
-        molecule,
+        molecule_path,
         working_dir: str,
         model: schnetpack.model.AtomisticModel,
         converter: AtomsConverter,
@@ -229,6 +230,7 @@ class AseInterface:
         energy_units: Union[str, float] = "kcal/mol",
         forces_units: Union[str, float] = "kcal/mol/Angstrom",
         stress_units: Union[str, float] = "kcal/mol/Angstrom/Angstrom/Angstrom",
+        fixed_atoms: Optional[List[int]] = None,
     ):
         """
         Args:
@@ -251,7 +253,10 @@ class AseInterface:
             os.makedirs(self.working_dir)
 
         # Load the molecule
-        self.molecule = molecule
+        self.molecule = read(molecule_path)
+        if fixed_atoms:
+            c = FixAtoms(fixed_atoms)
+            self.molecule.set_constraint(constraint=c)
 
         # Set up optimizer
         self.optimizer_class = optimizer_class
