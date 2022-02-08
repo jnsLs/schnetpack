@@ -241,27 +241,6 @@ class AtomisticTask(pl.LightningModule):
         return script
 
 
-class ConsiderOnlySelectedAtomsOLD(nn.Module):
-
-    def __init__(self, considered_atoms_path):
-        super().__init__()
-        self.considered_atoms = torch.load(considered_atoms_path)
-
-    def forward(self, pred, batch, target_name):
-
-        device = "cuda" if pred["_n_atoms"].is_cuda else "cpu"
-        self.considered_atoms = self.considered_atoms.to(device=device)
-
-        considered_atoms = []
-        for spl_idx, n_atoms in enumerate(pred["_n_atoms"]):
-            considered_atoms += (self.considered_atoms + n_atoms * spl_idx).tolist()
-
-        pred[target_name] = pred[target_name][considered_atoms]
-        batch[target_name] = batch[target_name][considered_atoms]
-
-        return pred, batch
-
-
 class ConsiderOnlySelectedAtoms(nn.Module):
 
     def __init__(self):
