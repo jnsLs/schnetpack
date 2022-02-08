@@ -96,7 +96,6 @@ class AtomisticTask(pl.LightningModule):
         self.scheduler_kwargs = scheduler_args
         self.schedule_monitor = scheduler_monitor
         self.outputs = nn.ModuleList(outputs)
-
         self.grad_enabled = len(self.model.required_derivatives) > 0
         self.inference_mode = False
         self.lr = optimizer_args["lr"]
