@@ -91,9 +91,15 @@ class BaseAtomsData(ABC):
                 self._transforms.append(tf)
             self._transform_module = torch.nn.Sequential(*self._transforms)
 
-    def subset(self, subset_idx: Optional[List[int]]):
+    def subset(self, subset_idx: List[int]):
+        assert (
+            subset_idx is not None
+        ), "Indices for creation of the subset need to be provided!"
         ds = copy.copy(self)
-        ds.subset_idx = subset_idx
+        if ds.subset_idx:
+            ds.subset_idx = [ds.subset_idx[i] for i in subset_idx]
+        else:
+            ds.subset_idx = subset_idx
         return ds
 
     @property
@@ -214,6 +220,17 @@ class ASEAtomsData(BaseAtomsData):
 
         # initialize units
         md = self.metadata
+        if "_distance_unit" not in md.keys():
+            raise AtomsDataError(
+                "Dataset does not have a distance unit set. Please add units to the dataset using"
+                "`spkunits`!"
+            )
+        if "_property_unit_dict" not in md.keys():
+            raise AtomsDataError(
+                "Dataset does not have a property units set. Please add units to the dataset using"
+                "`spkunits`!"
+            )
+
         if distance_unit:
             self.distance_conversion = spk.units.convert_units(
                 md["_distance_unit"], distance_unit

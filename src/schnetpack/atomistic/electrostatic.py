@@ -51,7 +51,7 @@ class DampedCoulombPotential(nn.Module):
             torch.Tensor: Damped potential
         """
         potential = 1.0 / d_ij
-        damped = 1.0 / torch.sqrt(d_ij ** 2 + 1)
+        damped = 1.0 / torch.sqrt(d_ij**2 + 1)
         f_switch = self.switch_fn(d_ij)
 
         return f_switch * damped + (1 - f_switch) * potential
@@ -94,6 +94,7 @@ class EnergyCoulomb(nn.Module):
         self.coulomb_potential = coulomb_potential
         self.charges_key = charges_key
         self.output_key = output_key
+        self.model_outputs = [output_key]
         self.use_neighbors_lr = use_neighbors_lr
 
         if cutoff is not None:
@@ -138,7 +139,7 @@ class EnergyCoulomb(nn.Module):
 
         # Apply cutoff if requested (shifting to zero)
         if self.cutoff is not None:
-            potential = potential + self.shift ** 2 / potential - 2.0 * self.shift
+            potential = potential + self.shift**2 / potential - 2.0 * self.shift
             potential = torch.where(
                 d_ij <= self.cutoff, potential, torch.zeros_like(potential)
             )
@@ -147,9 +148,8 @@ class EnergyCoulomb(nn.Module):
         y = snn.scatter_add(y, idx_m, dim_size=n_molecules)
         y = 0.5 * self.ke * torch.squeeze(y, -1)
 
-        result = {self.output_key: y}
-
-        return result
+        inputs[self.output_key] = y
+        return inputs
 
 
 class EnergyEwaldError(Exception):
@@ -193,6 +193,7 @@ class EnergyEwald(torch.nn.Module):
 
         self.charges_key = charges_key
         self.output_key = output_key
+        self.model_outputs = [output_key]
         self.use_neighbors_lr = use_neighbors_lr
 
         self.screening_fn = screening_fn
@@ -215,9 +216,9 @@ class EnergyEwald(torch.nn.Module):
         krange = torch.arange(0, self.k_max + 1, dtype=self.alpha.dtype)
         krange = torch.cat([krange, -krange[1:]])
         kvecs = torch.cartesian_prod(krange, krange, krange)
-        norm = torch.sum(kvecs ** 2, dim=1)
-        kvecs = kvecs[norm <= self.k_max ** 2 + 2, :]
-        norm = norm[norm <= self.k_max ** 2 + 2]
+        norm = torch.sum(kvecs**2, dim=1)
+        kvecs = kvecs[norm <= self.k_max**2 + 2, :]
+        norm = norm[norm <= self.k_max**2 + 2]
         kvecs = kvecs[norm != 0, :]
 
         return kvecs
@@ -259,9 +260,8 @@ class EnergyEwald(torch.nn.Module):
 
         y = y_real + y_reciprocal
 
-        results = {self.output_key: y}
-
-        return results
+        inputs[self.output_key] = y
+        return inputs
 
     def _real_space(
         self,
@@ -342,7 +342,7 @@ class EnergyEwald(torch.nn.Module):
         kvecs = torch.matmul(self.kvecs[None, :, :], recip_box)
 
         # Squared length of vectors M x K
-        k_squared = torch.sum(kvecs ** 2, dim=2)
+        k_squared = torch.sum(kvecs**2, dim=2)
 
         # 2) Gaussian part of ewald sum
         q_gauss = torch.exp(-0.25 * k_squared / self.alpha)  # M x K
@@ -359,14 +359,14 @@ class EnergyEwald(torch.nn.Module):
             (q[:, None] * torch.sin(kvec_dot_pos)), idx_m, dim_size=n_molecules
         )
         # Compute square of density
-        q_dens = q_real ** 2 + q_imag ** 2
+        q_dens = q_real**2 + q_imag**2
 
         # Sum over k vectors -> M x K -> M
         y_ewald = prefactor * torch.sum(q_dens * q_gauss / k_squared, dim=1)
 
         # 4) self interaction correction -> MN
         self_interaction = torch.sqrt(self.alpha / np.pi) * snn.scatter_add(
-            q ** 2, idx_m, dim_size=n_molecules
+            q**2, idx_m, dim_size=n_molecules
         )
 
         # Bring everything together

@@ -15,8 +15,6 @@ from schnetpack.utils.script import log_hyperparameters, print_config
 from schnetpack.data import BaseAtomsData, AtomsLoader
 from schnetpack.train import PredictionWriter
 
-import pickle
-
 log = logging.getLogger(__name__)
 
 
@@ -87,7 +85,11 @@ def train(config: DictConfig):
 
     # Set seed for random number generators in pytorch, numpy and python.random
     if "seed" in config:
-        seed_everything(config.seed)
+        log.info(f"Seed with <{config.seed}>")
+        seed_everything(config.seed, workers=True)
+    else:
+        log.info(f"Seed randomly...")
+        seed_everything(workers=True)
 
     if not os.path.exists(config.run.data_dir):
         os.makedirs(config.run.data_dir)
@@ -164,7 +166,7 @@ def train(config: DictConfig):
 
     # Evaluate model on test set after training
     log.info("Starting testing.")
-    trainer.test()
+    trainer.test(model=task, datamodule=datamodule)
 
     # Print path to best checkpoint
     log.info(f"Best checkpoint path:\n{trainer.checkpoint_callback.best_model_path}")
