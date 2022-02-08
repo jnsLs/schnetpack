@@ -219,7 +219,7 @@ class AseInterface:
 
     def __init__(
         self,
-        molecule_path,
+        molecule_path: str,
         working_dir: str,
         model: schnetpack.model.AtomisticModel,
         converter: AtomsConverter,
@@ -234,7 +234,7 @@ class AseInterface:
     ):
         """
         Args:
-            molecule_path: molecule as ase atoms object
+            molecule_path: Path to initial geometry
             working_dir: Path to directory where files should be stored
             model: Trained model
             neighbor_list: neighbor list for computing interatomic distances.
@@ -246,6 +246,7 @@ class AseInterface:
             forces_units: force units used by model
             stress_units: stress units used by model
             precision: toggle model precision
+            fixed_atoms: list of indices corresponding to fixed atoms
         """
         # Setup directory
         self.working_dir = working_dir

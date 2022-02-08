@@ -1,19 +1,12 @@
 from pathlib import Path
-import torchmetrics.regression
 from typing import Optional, Dict, List, Type, Any, Union
+
 import pytorch_lightning as pl
-from torch import Tensor
-from torchmetrics.functional.regression.mean_absolute_error import (
-    _mean_absolute_error_compute,
-    _mean_absolute_error_update,
-)
-from torch.nn import functional as F
 import torch
 from torch import nn as nn
 from torchmetrics import Metric
 
 from copy import deepcopy, copy
-
 from schnetpack.model.base import AtomisticModel
 
 __all__ = ["ModelOutput", "AtomisticTask"]
