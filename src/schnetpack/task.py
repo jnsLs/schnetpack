@@ -241,7 +241,7 @@ class ConsiderOnlySelectedAtoms(nn.Module):
 
     def forward(self, pred, batch, target_name):
 
-        considered_atoms = pred["considered_atoms"].nonzero()[:, 0]
+        considered_atoms = batch["considered_atoms"].nonzero()[:, 0]
 
         # drop neglected atoms
         pred[target_name] = pred[target_name][considered_atoms]
