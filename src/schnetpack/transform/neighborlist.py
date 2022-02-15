@@ -2,10 +2,12 @@ import os
 import torch
 import shutil
 from ase import Atoms
-from ase.neighborlist import neighbor_list
+from ase.neighborlist import neighbor_list, NewPrimitiveNeighborList, PrimitiveNeighborList
 from typing import Dict
 from .base import Transform
 from dirsync import sync
+import numpy as np
+from schnetpack.utils import timeit
 
 __all__ = [
     "ASENeighborList",
@@ -15,6 +17,7 @@ __all__ = [
     "CachedNeighborList",
     "NeighborListTransform",
     "WrapPositions",
+    "ASENeighborListWithSkin",
 ]
 
 from schnetpack import properties
@@ -189,6 +192,7 @@ class ASENeighborList(NeighborListTransform):
     Calculate neighbor list using ASE.
     """
 
+    #@timeit
     def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
         at = Atoms(numbers=Z, positions=positions, cell=cell, pbc=pbc)
 
@@ -198,6 +202,54 @@ class ASENeighborList(NeighborListTransform):
         S = torch.from_numpy(S).to(dtype=positions.dtype)
         offset = torch.mm(S, cell)
         return idx_i, idx_j, offset
+
+
+class ASENeighborListWithSkin(NeighborListTransform):
+    """
+    Calculate neighbor list using ASE.
+    """
+
+    def __init__(self, cutoff: float, skin: float = 0.3):
+        super().__init__(cutoff=cutoff)
+        self.nupdates = 0
+        self.skin = skin
+
+        #cutoffs = [cutoff] * n_atoms
+        #self.nbh_list_provider = NewPrimitiveNeighborList(cutoffs, skin=skin, self_interaction=False)
+
+    @timeit
+    def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
+        _ = self.update(pbc, cell, positions, Z, cutoff)
+        return self.idx_i, self.idx_j, self.offset
+
+    def update(self,  pbc, cell, positions, Z, cutoff):
+        """Make sure the list is up to date."""
+        if self.nupdates == 0:
+            self.build(pbc, cell, positions, Z, cutoff)
+            return True
+
+        if ((self.pbc != pbc.numpy()).any() or (self.cell != cell.numpy()).any() or
+            ((self.positions - positions.numpy())**2).sum(1).max() > self.skin**2):
+            self.build(pbc, cell, positions, Z, cutoff)
+            return True
+
+        return False
+
+    def build(self, pbc, cell, positions, Z, cutoff):
+        """Build the list."""
+        self.pbc = np.array(pbc, copy=True)
+        self.cell = np.array(cell, copy=True)
+        self.positions = np.array(positions, copy=True)
+
+        at = Atoms(numbers=Z, positions=positions, cell=cell, pbc=pbc)
+
+        idx_i, idx_j, S = neighbor_list("ijS", at, cutoff, self_interaction=False)
+        self.idx_i = torch.from_numpy(idx_i)
+        self.idx_j = torch.from_numpy(idx_j)
+        S = torch.from_numpy(S).to(dtype=positions.dtype)
+        self.offset = torch.mm(S, cell)
+
+        self.nupdates += 1
 
 
 class TorchNeighborList(NeighborListTransform):

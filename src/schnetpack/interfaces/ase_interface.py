@@ -41,6 +41,8 @@ from schnetpack.units import convert_units
 
 from typing import Optional, List, Union
 from ase import Atoms
+from schnetpack.utils import timeit
+
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +166,7 @@ class SpkCalculator(Calculator):
             self.stress: convert_units(stress_units, "eV/Ang/Ang/Ang"),
         }
 
+    #@timeit
     def calculate(
         self,
         atoms: ase.Atoms = None,
@@ -421,7 +424,7 @@ class AseInterface:
         optimizer.run(fmax, steps)
 
         # Save final geometry in xyz format
-        self.save_molecule(name)
+        self.save_molecule(name, file_format="extxyz")
 
     def compute_normal_modes(self, write_jmol: bool = True):
         """
