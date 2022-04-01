@@ -15,10 +15,14 @@ from schnetpack.utils.script import log_hyperparameters, print_config
 from schnetpack.data import BaseAtomsData, AtomsLoader
 from schnetpack.train import PredictionWriter
 
+import tempfile
+
 log = logging.getLogger(__name__)
 
 
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
+OmegaConf.register_new_resolver("temp_dir", tempfile.mkdtemp, use_cache=True)
+
 
 header = """
    _____      __    _   __     __  ____             __  
