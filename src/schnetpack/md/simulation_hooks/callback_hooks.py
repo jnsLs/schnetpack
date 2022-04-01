@@ -35,7 +35,7 @@ class Checkpoint(SimulationHook):
         self.every_n_steps = every_n_steps
         self.checkpoint_file = checkpoint_file
 
-    def on_step_end(self, simulator: Simulator):
+    def on_step_finalize(self, simulator: Simulator):
         """
         Store state_dict at specified intervals.
 
@@ -218,7 +218,9 @@ class MoleculeStream(DataStream):
             simulator (schnetpack.md.Simulator): Simulator class used in the molecular dynamics simulation.
         """
         # Account for potential energy and positions
-        data_dimension = 1 + simulator.system.total_n_atoms * 3
+        data_dimension = (
+            simulator.system.n_molecules + simulator.system.total_n_atoms * 3
+        )
 
         # If requested, also store velocities
         if self.store_velocities:
@@ -267,7 +269,7 @@ class MoleculeStream(DataStream):
 
         # Store energies
         start = 0
-        stop = 1
+        stop = simulator.system.n_molecules
         self.buffer[
             buffer_position : buffer_position + 1, :, start:stop
         ] = simulator.system.energy.view(simulator.system.n_replicas, -1).detach()
@@ -524,7 +526,7 @@ class FileLogger(SimulationHook):
         # Enable single writer, multiple reader flag
         self.file.swmr_mode = True
 
-    def on_step_end(self, simulator: Simulator):
+    def on_step_finalize(self, simulator: Simulator):
         """
         Update the buffer of each stream after each specified interval and flush the buffer to the main file if full.
 
@@ -602,7 +604,7 @@ class BasicTensorboardLogger(SimulationHook):
         self.n_replicas = simulator.system.n_replicas
         self.n_molecules = simulator.system.n_molecules
 
-    def on_step_end(self, simulator):
+    def on_step_finalize(self, simulator: Simulator):
         """
         Routine for collecting and storing scalar properties of replicas and molecules during the simulation. Needs to
         be adapted based on the properties.
@@ -676,7 +678,7 @@ class TensorBoardLogger(BasicTensorboardLogger):
 
         self.properties = properties
 
-    def on_step_end(self, simulator):
+    def on_step_finalize(self, simulator: Simulator):
         """
         Log the systems properties the given intervals.
 
