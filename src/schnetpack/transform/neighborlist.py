@@ -18,6 +18,7 @@ __all__ = [
     "NeighborListTransform",
     "WrapPositions",
     "ASENeighborListWithSkin",
+    "PredefinedNeighborList",
 ]
 
 from schnetpack import properties
@@ -185,6 +186,20 @@ class NeighborListTransform(Transform):
     ):
         """Override with specific neighbor list implementation"""
         raise NotImplementedError
+
+
+class PredefinedNeighborList(NeighborListTransform):
+    """
+    Calculate neighbor list using ASE.
+    """
+    def __init__(self, nbh_list_file):
+        self.nbh_list_file = nbh_list_file
+        super().__init__(cutoff=None)
+
+    #@timeit
+    def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
+        nbh_list = torch.load(self.nbh_list_file)
+        return nbh_list["_idx_i"], nbh_list["_idx_j"], nbh_list["_offsets"]
 
 
 class ASENeighborList(NeighborListTransform):
