@@ -192,8 +192,8 @@ class PredefinedNeighborList(NeighborListTransform):
     """
     Calculate neighbor list using ASE.
     """
-    def __init__(self, nbh_list_file):
-        self.nbh_list_file = nbh_list_file
+    def __init__(self, nbh_list_dir, nbh_list_file_name):
+        self.nbh_list_file = os.path.join(nbh_list_dir, nbh_list_file_name)
         super().__init__(cutoff=None)
 
     #@timeit
