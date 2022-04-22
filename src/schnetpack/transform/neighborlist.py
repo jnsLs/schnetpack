@@ -216,15 +216,27 @@ class RemoveSlabNeighbors(Transform):
         inputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
 
-        _idx_i = []
-        _idx_j = []
-        for i, j in zip(inputs[properties.idx_i].tolist(), inputs[properties.idx_j].tolist()):
+        n_neighbors = inputs[properties.idx_i].shape[0]
+        considered_nbh_indices = []
+        for nbh_idx in range(n_neighbors):
+            i = inputs[properties.idx_i][nbh_idx].item()
+            j = inputs[properties.idx_j][nbh_idx].item()
             if i not in self.slab_indices or j not in self.slab_indices:
-                _idx_i.append(i)
-                _idx_j.append(j)
+                considered_nbh_indices.append(nbh_idx)
 
-        inputs[properties.idx_i] = torch.tensor(_idx_i)
-        inputs[properties.idx_j] = torch.tensor(_idx_j)
+        inputs[properties.idx_i] = inputs[properties.idx_i][considered_nbh_indices]
+        inputs[properties.idx_j] = inputs[properties.idx_j][considered_nbh_indices]
+        inputs[properties.offsets] = inputs[properties.offsets][considered_nbh_indices]
+
+        #_idx_i = []
+        #_idx_j = []
+        #_offsets = []
+        #for i, j in zip(inputs[properties.idx_i].tolist(), inputs[properties.idx_j].tolist()):
+        #    if i not in self.slab_indices or j not in self.slab_indices:
+        #        _idx_i.append(i)
+        #        _idx_j.append(j)
+        #inputs[properties.idx_i] = torch.tensor(_idx_i)
+        #inputs[properties.idx_j] = torch.tensor(_idx_j)
 
         return inputs
 
