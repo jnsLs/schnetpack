@@ -80,6 +80,9 @@ class AtomsConverter:
         else:
             raise AtomsConverterError(f"Unrecognized precision {dtype}")
 
+        # neglect slab interactions
+        #self.transforms.append(schnetpack.transform.RemoveSlabNeighbors())
+
     def __call__(self, atoms: Atoms):
         """
 
@@ -188,6 +191,8 @@ class SpkCalculator(Calculator):
             # Convert to schnetpack input format
             model_inputs = self.converter(atoms)
             model_results = self.model(model_inputs)
+
+            #print(model_results["energy"].item())
 
             results = {}
             # TODO: use index information to slice everything properly

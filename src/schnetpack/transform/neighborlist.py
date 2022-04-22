@@ -19,6 +19,7 @@ __all__ = [
     "WrapPositions",
     "ASENeighborListWithSkin",
     "PredefinedNeighborList",
+    "RemoveSlabNeighbors",
 ]
 
 from schnetpack import properties
@@ -202,6 +203,32 @@ class PredefinedNeighborList(NeighborListTransform):
         return nbh_list["_idx_i"], nbh_list["_idx_j"], nbh_list["_offsets"]
 
 
+class RemoveSlabNeighbors(Transform):
+    """
+    Remove all neighbor indices that correspond to interactions between atoms in the slab
+    """
+    def __init__(self):
+        self.slab_indices = [_ for _ in range(400)]
+        super().__init__()
+
+    def forward(
+        self,
+        inputs: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+
+        _idx_i = []
+        _idx_j = []
+        for i, j in zip(inputs[properties.idx_i].tolist(), inputs[properties.idx_j].tolist()):
+            if i not in self.slab_indices or j not in self.slab_indices:
+                _idx_i.append(i)
+                _idx_j.append(j)
+
+        inputs[properties.idx_i] = torch.tensor(_idx_i)
+        inputs[properties.idx_j] = torch.tensor(_idx_j)
+
+        return inputs
+
+
 class ASENeighborList(NeighborListTransform):
     """
     Calculate neighbor list using ASE.
@@ -228,16 +255,16 @@ class ASENeighborListWithSkin(NeighborListTransform):
         super().__init__(cutoff=cutoff)
         self.nupdates = 0
         self.skin = skin
+        self.cutoff = cutoff + skin
 
-        #cutoffs = [cutoff] * n_atoms
-        #self.nbh_list_provider = NewPrimitiveNeighborList(cutoffs, skin=skin, self_interaction=False)
-
-    @timeit
+    #@timeit
     def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
         _ = self.update(pbc, cell, positions, Z, cutoff)
+        if _:
+            print("updated")
         return self.idx_i, self.idx_j, self.offset
 
-    def update(self,  pbc, cell, positions, Z, cutoff):
+    def update(self, pbc, cell, positions, Z, cutoff):
         """Make sure the list is up to date."""
         if self.nupdates == 0:
             self.build(pbc, cell, positions, Z, cutoff)
