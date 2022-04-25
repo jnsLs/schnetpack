@@ -113,34 +113,12 @@ class AtomisticTask(pl.LightningModule):
     def loss_fn(self, pred, batch):
         loss = 0.0
         for output in self.outputs:
-
-            pred_tmp = copy(pred)
-            batch_tmp = copy(batch)
-
-            # preprocessing
-            if output.preprocessing is not None:
-                if output.property != output.target_name:
-                    raise ValueError("property name is not consistent in results and input dict")
-                pred_tmp, batch_tmp = output.preprocessing(pred_tmp, batch_tmp, output.target_name)
-
-            # calculate loss
-            loss += output.calculate_loss(pred_tmp, batch_tmp)
+            loss += output.calculate_loss(pred, batch)
         return loss
 
     def log_metrics(self, pred, targets, subset):
         for output in self.outputs:
-
-            pred_tmp = copy(pred)
-            targets_tmp = copy(targets)
-
-            # preprocessing
-            if output.preprocessing is not None:
-                if output.property != output.target_name:
-                    raise ValueError("property name is not consistent in results and input dict")
-                pred_tmp, targets_tmp = output.preprocessing(pred_tmp, targets_tmp, output.target_name)
-
-            # calculate metrics
-            for metric_name, metric in output.calculate_metrics(pred_tmp, targets_tmp).items():
+            for metric_name, metric in output.calculate_metrics(pred, targets).items():
                 self.log(
                     f"{subset}_{output.name}_{metric_name}",
                     metric,
@@ -149,12 +127,22 @@ class AtomisticTask(pl.LightningModule):
                     prog_bar=False,
                 )
 
+    def apply_constraints(self, pred, batch):
+        for output in self.outputs:
+            if output.preprocessing is not None:
+                pred, batch = output.preprocessing(pred, batch, output)
+        return pred, batch
+
     def training_step(self, batch, batch_idx):
+
+        pred = self.predict_without_postprocessing(batch)
+        pred, batch = self.apply_constraints(pred, batch)
+
         targets = {
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
-        pred = self.predict_without_postprocessing(batch)
+
         loss = self.loss_fn(pred, targets)
 
         self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
@@ -236,12 +224,12 @@ class ConsiderOnlySelectedAtoms(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, pred, batch, target_name):
+    def forward(self, pred, batch, output):
 
         considered_atoms = batch["considered_atoms"].nonzero()[:, 0]
 
         # drop neglected atoms
-        pred[target_name] = pred[target_name][considered_atoms]
-        batch[target_name] = batch[target_name][considered_atoms]
+        pred[output.name] = pred[output.name][considered_atoms]
+        batch[output.target_property] = batch[output.target_property][considered_atoms]
 
         return pred, batch

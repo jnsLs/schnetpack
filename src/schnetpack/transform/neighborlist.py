@@ -208,7 +208,7 @@ class RemoveSlabNeighbors(Transform):
     Remove all neighbor indices that correspond to interactions between atoms in the slab
     """
     def __init__(self):
-        self.slab_indices = [_ for _ in range(400)]
+        self.slab_indices = [_ for _ in range(100)]
         super().__init__()
 
     def forward(
