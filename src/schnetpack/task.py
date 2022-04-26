@@ -127,21 +127,22 @@ class AtomisticTask(pl.LightningModule):
                     prog_bar=False,
                 )
 
-    def apply_constraints(self, pred, batch):
+    def apply_constraints(self, pred, targets):
         for output in self.outputs:
             for constraint in output.constraints:
-                pred, batch = constraint(pred, batch, output)
-        return pred, batch
+                pred, targets = constraint(pred, targets, output)
+        return pred, targets
 
     def training_step(self, batch, batch_idx):
-
-        pred = self.predict_without_postprocessing(batch)
-        pred, batch = self.apply_constraints(pred, batch)
 
         targets = {
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
+        targets["considered_atoms"] = batch["considered_atoms"]
+
+        pred = self.predict_without_postprocessing(batch)
+        pred, targets = self.apply_constraints(pred, targets)
 
         loss = self.loss_fn(pred, targets)
 
@@ -152,13 +153,14 @@ class AtomisticTask(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
 
-        pred = self.predict_without_postprocessing(batch)
-        pred, batch = self.apply_constraints(pred, batch)
-
         targets = {
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
+        targets["considered_atoms"] = batch["considered_atoms"]
+
+        pred = self.predict_without_postprocessing(batch)
+        pred, targets = self.apply_constraints(pred, targets)
 
         loss = self.loss_fn(pred, targets)
 
@@ -170,13 +172,14 @@ class AtomisticTask(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
 
-        pred = self.predict_without_postprocessing(batch)
-        pred, batch = self.apply_constraints(pred, batch)
-
         targets = {
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
+        targets["considered_atoms"] = batch["considered_atoms"]
+
+        pred = self.predict_without_postprocessing(batch)
+        pred, targets = self.apply_constraints(pred, targets)
 
         loss = self.loss_fn(pred, targets)
 
@@ -232,12 +235,12 @@ class ConsiderOnlySelectedAtoms(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, pred, batch, output):
+    def forward(self, pred, targets, output):
 
-        considered_atoms = batch["considered_atoms"].nonzero()[:, 0]
+        considered_atoms = targets["considered_atoms"].nonzero()[:, 0]
 
         # drop neglected atoms
         pred[output.name] = pred[output.name][considered_atoms]
-        batch[output.target_property] = batch[output.target_property][considered_atoms]
+        targets[output.target_property] = targets[output.target_property][considered_atoms]
 
-        return pred, batch
+        return pred, targets

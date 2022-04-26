@@ -8,6 +8,7 @@ from .base import Transform
 from dirsync import sync
 import numpy as np
 from schnetpack.utils import timeit
+from typing import Optional, List, Dict, Tuple, Union
 
 __all__ = [
     "ASENeighborList",
@@ -18,8 +19,8 @@ __all__ = [
     "NeighborListTransform",
     "WrapPositions",
     "ASENeighborListWithSkin",
-    "PredefinedNeighborList",
-    "RemoveSlabNeighbors",
+    "RemoveNeighbors",
+    "NeighborlistWrapper"
 ]
 
 from schnetpack import properties
@@ -28,6 +29,24 @@ import fasteners
 
 class CacheException(Exception):
     pass
+
+
+class NeighborlistWrapper(Transform):
+    def __init__(
+            self,
+            neighbor_lists: Optional[List[torch.nn.Module]] = None,
+    ):
+        super().__init__()
+        self.neighbor_lists = neighbor_lists
+
+    def forward(
+        self,
+        inputs: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+
+        for nbh_list in self.neighbor_lists:
+            inputs = nbh_list(inputs)
+        return inputs
 
 
 class CachedNeighborList(Transform):
@@ -86,6 +105,7 @@ class CachedNeighborList(Transform):
             # use cache_location to store and load neighborlists
             self.cache_location = cache_path
 
+    #@timeit
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
@@ -187,58 +207,6 @@ class NeighborListTransform(Transform):
     ):
         """Override with specific neighbor list implementation"""
         raise NotImplementedError
-
-
-class PredefinedNeighborList(NeighborListTransform):
-    """
-    Calculate neighbor list using ASE.
-    """
-    def __init__(self, nbh_list_dir, nbh_list_file_name):
-        self.nbh_list_file = os.path.join(nbh_list_dir, nbh_list_file_name)
-        super().__init__(cutoff=None)
-
-    #@timeit
-    def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
-        nbh_list = torch.load(self.nbh_list_file)
-        return nbh_list["_idx_i"], nbh_list["_idx_j"], nbh_list["_offsets"]
-
-
-class RemoveSlabNeighbors(Transform):
-    """
-    Remove all neighbor indices that correspond to interactions between atoms in the slab
-    """
-    def __init__(self):
-        self.slab_indices = [_ for _ in range(100)]
-        super().__init__()
-
-    def forward(
-        self,
-        inputs: Dict[str, torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-
-        n_neighbors = inputs[properties.idx_i].shape[0]
-        considered_nbh_indices = []
-        for nbh_idx in range(n_neighbors):
-            i = inputs[properties.idx_i][nbh_idx].item()
-            j = inputs[properties.idx_j][nbh_idx].item()
-            if i not in self.slab_indices or j not in self.slab_indices:
-                considered_nbh_indices.append(nbh_idx)
-
-        inputs[properties.idx_i] = inputs[properties.idx_i][considered_nbh_indices]
-        inputs[properties.idx_j] = inputs[properties.idx_j][considered_nbh_indices]
-        inputs[properties.offsets] = inputs[properties.offsets][considered_nbh_indices]
-
-        #_idx_i = []
-        #_idx_j = []
-        #_offsets = []
-        #for i, j in zip(inputs[properties.idx_i].tolist(), inputs[properties.idx_j].tolist()):
-        #    if i not in self.slab_indices or j not in self.slab_indices:
-        #        _idx_i.append(i)
-        #        _idx_j.append(j)
-        #inputs[properties.idx_i] = torch.tensor(_idx_i)
-        #inputs[properties.idx_j] = torch.tensor(_idx_j)
-
-        return inputs
 
 
 class ASENeighborList(NeighborListTransform):
@@ -431,6 +399,35 @@ class TorchNeighborList(NeighborListTransform):
         )
 
 
+class RemoveNeighbors(Transform):
+    """
+    Remove all neighbor indices that correspond to interactions between atoms in the slab
+    """
+    def __init__(self, ignored_indices):
+        self.ignored_indices = ignored_indices
+        super().__init__()
+
+    #@timeit
+    def forward(
+        self,
+        inputs: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+
+        n_neighbors = inputs[properties.idx_i].shape[0]
+        slab_indices = inputs[self.ignored_indices].tolist()
+        considered_nbh_indices = []
+        for nbh_idx in range(n_neighbors):
+            i = inputs[properties.idx_i][nbh_idx].item()
+            j = inputs[properties.idx_j][nbh_idx].item()
+            if i not in slab_indices or j not in slab_indices:
+                considered_nbh_indices.append(nbh_idx)
+
+        inputs[properties.idx_i] = inputs[properties.idx_i][considered_nbh_indices]
+        inputs[properties.idx_j] = inputs[properties.idx_j][considered_nbh_indices]
+        inputs[properties.offsets] = inputs[properties.offsets][considered_nbh_indices]
+        return inputs
+
+
 class CollectAtomTriples(Transform):
     """
     Generate the index tensors for all triples between atoms within the cutoff shell.
@@ -554,3 +551,17 @@ class WrapPositions(Transform):
         inputs[properties.R] = R_wrapped
 
         return inputs
+
+
+#class PredefinedNeighborList(NeighborListTransform):
+#    """
+#    Calculate neighbor list using ASE.
+#    """
+#    def __init__(self, nbh_list_dir, nbh_list_file_name):
+#        self.nbh_list_file = os.path.join(nbh_list_dir, nbh_list_file_name)
+#        super().__init__(cutoff=None)
+
+#    #@timeit
+#    def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
+#        nbh_list = torch.load(self.nbh_list_file)
+#        return nbh_list["_idx_i"], nbh_list["_idx_j"], nbh_list["_offsets"]
