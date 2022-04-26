@@ -19,7 +19,7 @@ __all__ = [
     "NeighborListTransform",
     "WrapPositions",
     "ASENeighborListWithSkin",
-    "RemoveNeighbors",
+    "RemoveSomeNeighbors",
     "NeighborlistWrapper"
 ]
 
@@ -399,12 +399,12 @@ class TorchNeighborList(NeighborListTransform):
         )
 
 
-class RemoveNeighbors(Transform):
+class RemoveSomeNeighbors(Transform):
     """
     Remove all neighbor indices that correspond to interactions between atoms in the slab
     """
-    def __init__(self, ignored_indices):
-        self.ignored_indices = ignored_indices
+    def __init__(self, selection_name):
+        self.selection_name = selection_name
         super().__init__()
 
     #@timeit
@@ -414,7 +414,7 @@ class RemoveNeighbors(Transform):
     ) -> Dict[str, torch.Tensor]:
 
         n_neighbors = inputs[properties.idx_i].shape[0]
-        slab_indices = inputs[self.ignored_indices].tolist()
+        slab_indices = inputs[self.selection_name].tolist()
         considered_nbh_indices = []
         for nbh_idx in range(n_neighbors):
             i = inputs[properties.idx_i][nbh_idx].item()

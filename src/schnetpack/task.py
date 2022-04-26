@@ -232,12 +232,13 @@ class AtomisticTask(pl.LightningModule):
 
 class ConsiderOnlySelectedAtoms(nn.Module):
 
-    def __init__(self):
+    def __init__(self, selection_name):
         super().__init__()
+        self.selection_name = selection_name
 
     def forward(self, pred, targets, output):
 
-        considered_atoms = targets["considered_atoms"].nonzero()[:, 0]
+        considered_atoms = targets[self.selection_name].nonzero()[:, 0]
 
         # drop neglected atoms
         pred[output.name] = pred[output.name][considered_atoms]
