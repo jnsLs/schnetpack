@@ -24,7 +24,7 @@ class ModelOutput(nn.Module):
         loss_fn: Optional[nn.Module] = None,
         loss_weight: float = 1.0,
         metrics: Optional[Dict[str, Metric]] = None,
-        preprocessing: Optional[nn.Module] = None,
+        constraints: Optional[List[torch.nn.Module]] = None,
         target_property: Optional[str] = None,
     ):
         """
@@ -42,7 +42,7 @@ class ModelOutput(nn.Module):
         self.loss_fn = loss_fn
         self.loss_weight = loss_weight
         self.metrics = nn.ModuleDict(metrics)
-        self.preprocessing = preprocessing
+        self.constraints = constraints or []
 
     def calculate_loss(self, pred, target):
         if self.loss_weight == 0 or self.loss_fn is None:
@@ -129,8 +129,8 @@ class AtomisticTask(pl.LightningModule):
 
     def apply_constraints(self, pred, batch):
         for output in self.outputs:
-            if output.preprocessing is not None:
-                pred, batch = output.preprocessing(pred, batch, output)
+            for constraint in output.constraints:
+                pred, batch = constraint(pred, batch, output)
         return pred, batch
 
     def training_step(self, batch, batch_idx):
@@ -151,11 +151,15 @@ class AtomisticTask(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
+
+        pred = self.predict_without_postprocessing(batch)
+        pred, batch = self.apply_constraints(pred, batch)
+
         targets = {
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
-        pred = self.predict_without_postprocessing(batch)
+
         loss = self.loss_fn(pred, targets)
 
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
@@ -165,11 +169,15 @@ class AtomisticTask(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
+
+        pred = self.predict_without_postprocessing(batch)
+        pred, batch = self.apply_constraints(pred, batch)
+
         targets = {
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
-        pred = self.predict_without_postprocessing(batch)
+
         loss = self.loss_fn(pred, targets)
 
         self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
