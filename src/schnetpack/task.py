@@ -6,7 +6,6 @@ import torch
 from torch import nn as nn
 from torchmetrics import Metric
 
-from copy import deepcopy, copy
 from schnetpack.model.base import AtomisticModel
 
 __all__ = ["ModelOutput", "AtomisticTask"]
@@ -231,8 +230,17 @@ class AtomisticTask(pl.LightningModule):
 
 
 class ConsiderOnlySelectedAtoms(nn.Module):
+    """
+    Constraint that allows to adapt the use of atom-wise targets such as, e.g., atomic forces for model optimization.
+    In the forward pass, a torch tensor is loaded from the dataset, which specifies the considered atoms is. Only the
+    predictions of those atoms are considered for training, validation, and testing.
+    """
 
     def __init__(self, selection_name):
+        """
+        Args:
+            selection_name: string associated with the list of considered atoms in the dataset
+        """
         super().__init__()
         self.selection_name = selection_name
 
