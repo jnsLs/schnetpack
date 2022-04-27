@@ -4,6 +4,7 @@ from typing import Dict, Optional, List
 
 from schnetpack.transform import Transform
 import schnetpack.properties as properties
+from schnetpack.utils import timeit
 
 import torch
 import torch.nn as nn
@@ -163,7 +164,7 @@ class NeuralNetworkPotential(AtomisticModel):
         self.collect_derivatives()
         self.collect_outputs()
 
-        if self.input_dtype == 'torch.float64':
+        if self.input_dtype == "torch.float64":
             self.double()
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:

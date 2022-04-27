@@ -168,7 +168,7 @@ class SpkCalculator(Calculator):
             self.stress: convert_units(stress_units, "eV/Ang/Ang/Ang"),
         }
 
-    #@timeit
+    # @timeit
     def calculate(
         self,
         atoms: ase.Atoms = None,
@@ -191,7 +191,7 @@ class SpkCalculator(Calculator):
             model_inputs = self.converter(atoms)
             model_results = self.model(model_inputs)
 
-            #print(model_results["energy"].item())
+            # print(model_results["energy"].item())
 
             results = {}
             # TODO: use index information to slice everything properly

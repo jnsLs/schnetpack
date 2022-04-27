@@ -12,7 +12,7 @@ __all__ = [
     "SubtractCenterOfGeometry",
     "AddOffsets",
     "RemoveOffsets",
-    "ZeroSilverForces"
+    "ZeroSilverForces",
 ]
 
 
@@ -189,7 +189,7 @@ class ZeroSilverForces(Transform):
         results: Dict[str, torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
 
-        non_silver_atoms = (inputs[structure.Z] != 47)
+        non_silver_atoms = inputs[structure.Z] != 47
         results["forces"] *= non_silver_atoms.unsqueeze(1).repeat(1, 3)
 
         return results

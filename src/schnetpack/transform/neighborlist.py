@@ -20,7 +20,7 @@ __all__ = [
     "WrapPositions",
     "ASENeighborListWithSkin",
     "RemoveSomeNeighbors",
-    "NeighborlistWrapper"
+    "NeighborlistWrapper",
 ]
 
 from schnetpack import properties
@@ -33,19 +33,25 @@ class CacheException(Exception):
 
 class NeighborlistWrapper(Transform):
     def __init__(
-            self,
-            neighbor_lists: Optional[List[torch.nn.Module]] = None,
+        self,
+        neighbor_list: Transform,
+        nbh_postprocessing: Optional[List[torch.nn.Module]] = None,
     ):
         super().__init__()
-        self.neighbor_lists = neighbor_lists
+        self.neighbor_list = neighbor_list
+        self.nbh_postprocessing = nbh_postprocessing
+        self.enable_update = True
 
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
 
-        for nbh_list in self.neighbor_lists:
-            inputs = nbh_list(inputs)
+        inputs = self.neighbor_list(inputs)
+        for postprocess in self.nbh_postprocessing:
+            if hasattr(self.neighbor_list, "enable_update"):
+                postprocess.enable_update = self.neighbor_list.enable_update
+            inputs = postprocess(inputs)
         return inputs
 
 
@@ -105,7 +111,7 @@ class CachedNeighborList(Transform):
             # use cache_location to store and load neighborlists
             self.cache_location = cache_path
 
-    #@timeit
+    # @timeit
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
@@ -214,7 +220,7 @@ class ASENeighborList(NeighborListTransform):
     Calculate neighbor list using ASE.
     """
 
-    #@timeit
+    # @timeit
     def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
         at = Atoms(numbers=Z, positions=positions, cell=cell, pbc=pbc)
 
@@ -236,12 +242,13 @@ class ASENeighborListWithSkin(NeighborListTransform):
         self.nupdates = 0
         self.skin = skin
         self.cutoff = cutoff + skin
+        self.enable_update = True
 
-    #@timeit
+    # @timeit
     def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
-        _ = self.update(pbc, cell, positions, Z, cutoff)
-        if _:
-            print("updated")
+        self.enable_update = self.update(pbc, cell, positions, Z, cutoff)
+        if self.enable_update:
+            print("nbh list updated")
         return self.idx_i, self.idx_j, self.offset
 
     def update(self, pbc, cell, positions, Z, cutoff):
@@ -250,8 +257,11 @@ class ASENeighborListWithSkin(NeighborListTransform):
             self.build(pbc, cell, positions, Z, cutoff)
             return True
 
-        if ((self.pbc != pbc.numpy()).any() or (self.cell != cell.numpy()).any() or
-            ((self.positions - positions.numpy())**2).sum(1).max() > self.skin**2):
+        if (
+            (self.pbc != pbc.numpy()).any()
+            or (self.cell != cell.numpy()).any()
+            or ((self.positions - positions.numpy()) ** 2).sum(1).max() > self.skin ** 2
+        ):
             self.build(pbc, cell, positions, Z, cutoff)
             return True
 
@@ -403,28 +413,34 @@ class RemoveSomeNeighbors(Transform):
     """
     Remove all neighbor indices that correspond to interactions between atoms in the slab
     """
+
     def __init__(self, selection_name):
         self.selection_name = selection_name
+        self.enable_update = True
+        self.considered_nbh_indices = []
         super().__init__()
 
-    #@timeit
+    # @timeit
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
 
-        n_neighbors = inputs[properties.idx_i].shape[0]
-        slab_indices = inputs[self.selection_name].tolist()
-        considered_nbh_indices = []
-        for nbh_idx in range(n_neighbors):
-            i = inputs[properties.idx_i][nbh_idx].item()
-            j = inputs[properties.idx_j][nbh_idx].item()
-            if i not in slab_indices or j not in slab_indices:
-                considered_nbh_indices.append(nbh_idx)
+        if self.enable_update:
+            n_neighbors = inputs[properties.idx_i].shape[0]
+            slab_indices = inputs[self.selection_name].tolist()
+            self.considered_nbh_indices = []
+            for nbh_idx in range(n_neighbors):
+                i = inputs[properties.idx_i][nbh_idx].item()
+                j = inputs[properties.idx_j][nbh_idx].item()
+                if i not in slab_indices or j not in slab_indices:
+                    self.considered_nbh_indices.append(nbh_idx)
 
-        inputs[properties.idx_i] = inputs[properties.idx_i][considered_nbh_indices]
-        inputs[properties.idx_j] = inputs[properties.idx_j][considered_nbh_indices]
-        inputs[properties.offsets] = inputs[properties.offsets][considered_nbh_indices]
+        inputs[properties.idx_i] = inputs[properties.idx_i][self.considered_nbh_indices]
+        inputs[properties.idx_j] = inputs[properties.idx_j][self.considered_nbh_indices]
+        inputs[properties.offsets] = inputs[properties.offsets][
+            self.considered_nbh_indices
+        ]
         return inputs
 
 
@@ -553,7 +569,7 @@ class WrapPositions(Transform):
         return inputs
 
 
-#class PredefinedNeighborList(NeighborListTransform):
+# class PredefinedNeighborList(NeighborListTransform):
 #    """
 #    Calculate neighbor list using ASE.
 #    """

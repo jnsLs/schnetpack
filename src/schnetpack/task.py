@@ -7,6 +7,7 @@ from torch import nn as nn
 from torchmetrics import Metric
 
 from schnetpack.model.base import AtomisticModel
+from schnetpack.utils import timeit
 
 __all__ = ["ModelOutput", "AtomisticTask"]
 
@@ -250,6 +251,8 @@ class ConsiderOnlySelectedAtoms(nn.Module):
 
         # drop neglected atoms
         pred[output.name] = pred[output.name][considered_atoms]
-        targets[output.target_property] = targets[output.target_property][considered_atoms]
+        targets[output.target_property] = targets[output.target_property][
+            considered_atoms
+        ]
 
         return pred, targets
