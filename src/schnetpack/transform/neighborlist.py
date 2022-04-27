@@ -2,7 +2,7 @@ import os
 import torch
 import shutil
 from ase import Atoms
-from ase.neighborlist import neighbor_list, NewPrimitiveNeighborList, PrimitiveNeighborList
+from ase.neighborlist import neighbor_list
 from typing import Dict
 from .base import Transform
 from dirsync import sync

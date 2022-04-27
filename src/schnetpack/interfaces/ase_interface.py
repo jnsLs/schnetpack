@@ -80,9 +80,6 @@ class AtomsConverter:
         else:
             raise AtomsConverterError(f"Unrecognized precision {dtype}")
 
-        # neglect slab interactions
-        #self.transforms.append(schnetpack.transform.RemoveSlabNeighbors())
-
     def __call__(self, atoms: Atoms):
         """
 
@@ -99,6 +96,8 @@ class AtomsConverter:
             properties.cell: torch.from_numpy(atoms.get_cell().array),
             properties.pbc: torch.from_numpy(atoms.get_pbc()),
         }
+
+        inputs["slab_indices"] = torch.tensor([_ for _ in range(100)])
 
         for transform in self.transforms:
             inputs = transform(inputs)
@@ -192,7 +191,7 @@ class SpkCalculator(Calculator):
             model_inputs = self.converter(atoms)
             model_results = self.model(model_inputs)
 
-            print(model_results["energy"].item())
+            #print(model_results["energy"].item())
 
             results = {}
             # TODO: use index information to slice everything properly
