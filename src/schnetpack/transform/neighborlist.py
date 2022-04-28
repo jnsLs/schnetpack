@@ -40,7 +40,6 @@ class NeighborlistWrapper(Transform):
         super().__init__()
         self.neighbor_list = neighbor_list
         self.nbh_postprocessing = nbh_postprocessing
-        self.enable_update = True
 
     def forward(
         self,
@@ -51,6 +50,8 @@ class NeighborlistWrapper(Transform):
         for postprocess in self.nbh_postprocessing:
             if hasattr(self.neighbor_list, "enable_update"):
                 postprocess.enable_update = self.neighbor_list.enable_update
+            else:
+                postprocess.enable_update = True
             inputs = postprocess(inputs)
         return inputs
 
@@ -420,7 +421,6 @@ class RemoveSomeNeighbors(Transform):
         self.considered_nbh_indices = []
         super().__init__()
 
-    # @timeit
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
@@ -438,9 +438,7 @@ class RemoveSomeNeighbors(Transform):
 
         inputs[properties.idx_i] = inputs[properties.idx_i][self.considered_nbh_indices]
         inputs[properties.idx_j] = inputs[properties.idx_j][self.considered_nbh_indices]
-        inputs[properties.offsets] = inputs[properties.offsets][
-            self.considered_nbh_indices
-        ]
+        inputs[properties.offsets] = inputs[properties.offsets][self.considered_nbh_indices]
         return inputs
 
 

@@ -39,7 +39,7 @@ from schnetpack.data.loader import _atoms_collate_fn
 from schnetpack.transform import CastTo32, CastTo64
 from schnetpack.units import convert_units
 
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict
 from ase import Atoms
 from schnetpack.utils import timeit
 
@@ -62,10 +62,12 @@ class AtomsConverter:
     def __init__(
         self,
         neighbor_list: schnetpack.transform.Transform,
+        additional_inputs: Dict[str, torch.Tensor] = None,
         device: Union[str, torch.device] = "cpu",
         dtype: torch.dtype = torch.float32,
     ):
         self.neighbor_list = neighbor_list
+        self.additional_inputs = additional_inputs or {}
         self.device = device
         self.dtype = dtype
 
@@ -97,7 +99,7 @@ class AtomsConverter:
             properties.pbc: torch.from_numpy(atoms.get_pbc()),
         }
 
-        inputs["slab_indices"] = torch.tensor([_ for _ in range(100)])
+        inputs.update(self.additional_inputs)
 
         for transform in self.transforms:
             inputs = transform(inputs)
