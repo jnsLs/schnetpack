@@ -39,7 +39,7 @@ class NeighborlistWrapper(Transform):
     ):
         super().__init__()
         self.neighbor_list = neighbor_list
-        self.nbh_postprocessing = nbh_postprocessing
+        self.nbh_postprocessing = nbh_postprocessing or []
 
     def forward(
         self,
@@ -418,7 +418,7 @@ class RemoveSomeNeighbors(Transform):
     def __init__(self, selection_name):
         self.selection_name = selection_name
         self.enable_update = True
-        self.considered_nbh_indices = []
+        self.removed_nbh_indices = []
         super().__init__()
 
     def forward(
@@ -429,16 +429,16 @@ class RemoveSomeNeighbors(Transform):
         if self.enable_update:
             n_neighbors = inputs[properties.idx_i].shape[0]
             slab_indices = inputs[self.selection_name].tolist()
-            self.considered_nbh_indices = []
+            self.removed_nbh_indices = []
             for nbh_idx in range(n_neighbors):
                 i = inputs[properties.idx_i][nbh_idx].item()
                 j = inputs[properties.idx_j][nbh_idx].item()
                 if i not in slab_indices or j not in slab_indices:
-                    self.considered_nbh_indices.append(nbh_idx)
+                    self.removed_nbh_indices.append(nbh_idx)
 
-        inputs[properties.idx_i] = inputs[properties.idx_i][self.considered_nbh_indices]
-        inputs[properties.idx_j] = inputs[properties.idx_j][self.considered_nbh_indices]
-        inputs[properties.offsets] = inputs[properties.offsets][self.considered_nbh_indices]
+        inputs[properties.idx_i] = inputs[properties.idx_i][self.removed_nbh_indices]
+        inputs[properties.idx_j] = inputs[properties.idx_j][self.removed_nbh_indices]
+        inputs[properties.offsets] = inputs[properties.offsets][self.removed_nbh_indices]
         return inputs
 
 
