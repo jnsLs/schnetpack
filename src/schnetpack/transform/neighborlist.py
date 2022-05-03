@@ -18,9 +18,9 @@ __all__ = [
     "CachedNeighborList",
     "NeighborListTransform",
     "WrapPositions",
-    "ASENeighborListWithSkin",
     "RemoveSomeNeighbors",
     "NeighborlistWrapper",
+    "SkinNeighborList",
 ]
 
 from schnetpack import properties
@@ -233,10 +233,83 @@ class ASENeighborList(NeighborListTransform):
         return idx_i, idx_j, offset
 
 
-class ASENeighborListWithSkin(NeighborListTransform):
+class SkinNeighborList(Transform):
     """
-    Calculate neighbor list using ASE.
+    Calculate neighbor list using skin.
     """
+
+    is_preprocessor: bool = True
+    is_postprocessor: bool = False
+
+    def __init__(
+        self,
+        neighbor_list: Transform,
+        nbh_postprocessing: Optional[List[torch.nn.Module]] = None,
+        cutoff_skin: float = 0.3,
+    ):
+        super().__init__()
+        self.cutoff_skin = cutoff_skin
+        self.enable_update = True
+        self.nupdates = 0
+        self.neighbor_list = neighbor_list
+        self.neighbor_list._cutoff = neighbor_list._cutoff + cutoff_skin
+        self.nbh_postprocessing = nbh_postprocessing or []
+
+    # @timeit
+    def forward(
+        self,
+        inputs: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+
+        self.enable_update = self._update(inputs)
+        if self.enable_update:
+            print("nbh list updated")
+
+        inputs[properties.idx_i] = self.idx_i
+        inputs[properties.idx_j] = self.idx_j
+        inputs[properties.offsets] = self.offset
+
+        return inputs
+
+    def _update(self, inputs):
+        """Make sure the list is up to date."""
+
+        positions = inputs[properties.R]
+        cell = inputs[properties.cell].view(3, 3)
+        pbc = inputs[properties.pbc]
+
+        if self.nupdates == 0:
+            self._build(inputs)
+            return True
+
+        if (
+            (self.pbc != pbc.numpy()).any()
+            or (self.cell != cell.numpy()).any()
+            or ((self.positions - positions.numpy()) ** 2).sum(1).max() > self.cutoff_skin ** 2
+        ):
+            self._build(inputs)
+            return True
+
+        return False
+
+    def _build(self, inputs):
+
+        self.positions = np.array(inputs[properties.R], copy=True)
+        self.cell = np.array(inputs[properties.cell].view(3, 3), copy=True)
+        self.pbc = np.array(inputs[properties.pbc], copy=True)
+
+        inputs = self.neighbor_list(inputs)
+        for postprocess in self.nbh_postprocessing:
+            inputs = postprocess(inputs)
+
+        self.idx_i = inputs[properties.idx_i].detach().clone()
+        self.idx_j = inputs[properties.idx_j].detach().clone()
+        self.offset = inputs[properties.offsets].detach().clone()
+
+        self.nupdates += 1
+
+
+class ASENeighborListWithSkinOld(NeighborListTransform):
 
     def __init__(self, cutoff: float, skin: float = 0.3):
         super().__init__(cutoff=cutoff)
