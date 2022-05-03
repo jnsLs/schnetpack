@@ -3,12 +3,13 @@ import torch
 import shutil
 from ase import Atoms
 from ase.neighborlist import neighbor_list
-from typing import Dict
 from .base import Transform
 from dirsync import sync
 import numpy as np
+
 from schnetpack.utils import timeit
 from typing import Optional, List, Dict, Tuple, Union
+
 
 __all__ = [
     "ASENeighborList",
@@ -235,7 +236,17 @@ class ASENeighborList(NeighborListTransform):
 
 class SkinNeighborList(Transform):
     """
-    Calculate neighbor list using skin.
+    Neighbor list provider utilizing a cutoff skin for computational efficiency. Wrapper around neighbor list classes
+    such as, e.g., ASENeighborList. Designed for use cases with gradual structural changes such ase MD simulations
+    and structure relaxations.
+
+    Note:
+        - Not meant to be used for training, since the shuffling of training data results in large
+          structural deviations between subsequent training samples.
+        - Not transferable between different molecule conformations or varying atom indexing.
+        - When using a finite skin value also neighbors outside the cutoff are returned. Hence, to obtain equivalent
+          atomic environments with and without the usage of a cutoff skin, the computation of pair wise atomic distances
+          in the network must consider the cutoff accordingly. This is the case in the SchNet/PaiNN framework.
     """
 
     is_preprocessor: bool = True
@@ -247,9 +258,22 @@ class SkinNeighborList(Transform):
         nbh_postprocessing: Optional[List[torch.nn.Module]] = None,
         cutoff_skin: float = 0.3,
     ):
+        """
+        Args:
+            neighbor_list: the neighbor list to use
+            nbh_postprocessing: post-processing transforms for manipulating the neighbor lists provided by neighbor_list
+            cutoff_skin: float
+                If no atom has moved more than the skin-distance since the neighborlist has been updated the last time,
+                then the neighbor list is reused. This will save some expensive rebuilds of the list, but extra
+                neighbors outside the cutoff will be returned.
+                Note:
+                    Please choose a sufficiently large cutoff_skin value to ensure that between two subsequent samples
+                    no atom can penetrate through the skin into the cutoff sphere of another atom if it is not in the
+                    neighbor list of that atom.
+        """
+
         super().__init__()
         self.cutoff_skin = cutoff_skin
-        self.enable_update = True
         self.nupdates = 0
         self.neighbor_list = neighbor_list
         self.neighbor_list._cutoff = neighbor_list._cutoff + cutoff_skin
@@ -261,9 +285,7 @@ class SkinNeighborList(Transform):
         inputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
 
-        self.enable_update = self._update(inputs)
-        if self.enable_update:
-            print("nbh list updated")
+        _ = self._update(inputs)
 
         inputs[properties.idx_i] = self.idx_i
         inputs[properties.idx_j] = self.idx_j
@@ -305,55 +327,6 @@ class SkinNeighborList(Transform):
         self.idx_i = inputs[properties.idx_i].detach().clone()
         self.idx_j = inputs[properties.idx_j].detach().clone()
         self.offset = inputs[properties.offsets].detach().clone()
-
-        self.nupdates += 1
-
-
-class ASENeighborListWithSkinOld(NeighborListTransform):
-
-    def __init__(self, cutoff: float, skin: float = 0.3):
-        super().__init__(cutoff=cutoff)
-        self.nupdates = 0
-        self.skin = skin
-        self.cutoff = cutoff + skin
-        self.enable_update = True
-
-    # @timeit
-    def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
-        self.enable_update = self.update(pbc, cell, positions, Z, cutoff)
-        if self.enable_update:
-            print("nbh list updated")
-        return self.idx_i, self.idx_j, self.offset
-
-    def update(self, pbc, cell, positions, Z, cutoff):
-        """Make sure the list is up to date."""
-        if self.nupdates == 0:
-            self.build(pbc, cell, positions, Z, cutoff)
-            return True
-
-        if (
-            (self.pbc != pbc.numpy()).any()
-            or (self.cell != cell.numpy()).any()
-            or ((self.positions - positions.numpy()) ** 2).sum(1).max() > self.skin ** 2
-        ):
-            self.build(pbc, cell, positions, Z, cutoff)
-            return True
-
-        return False
-
-    def build(self, pbc, cell, positions, Z, cutoff):
-        """Build the list."""
-        self.pbc = np.array(pbc, copy=True)
-        self.cell = np.array(cell, copy=True)
-        self.positions = np.array(positions, copy=True)
-
-        at = Atoms(numbers=Z, positions=positions, cell=cell, pbc=pbc)
-
-        idx_i, idx_j, S = neighbor_list("ijS", at, cutoff, self_interaction=False)
-        self.idx_i = torch.from_numpy(idx_i)
-        self.idx_j = torch.from_numpy(idx_j)
-        S = torch.from_numpy(S).to(dtype=positions.dtype)
-        self.offset = torch.mm(S, cell)
 
         self.nupdates += 1
 
@@ -638,17 +611,3 @@ class WrapPositions(Transform):
         inputs[properties.R] = R_wrapped
 
         return inputs
-
-
-# class PredefinedNeighborList(NeighborListTransform):
-#    """
-#    Calculate neighbor list using ASE.
-#    """
-#    def __init__(self, nbh_list_dir, nbh_list_file_name):
-#        self.nbh_list_file = os.path.join(nbh_list_dir, nbh_list_file_name)
-#        super().__init__(cutoff=None)
-
-#    #@timeit
-#    def _build_neighbor_list(self, Z, positions, cell, pbc, cutoff):
-#        nbh_list = torch.load(self.nbh_list_file)
-#        return nbh_list["_idx_i"], nbh_list["_idx_j"], nbh_list["_offsets"]
