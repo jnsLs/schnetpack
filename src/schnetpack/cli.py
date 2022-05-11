@@ -21,8 +21,7 @@ log = logging.getLogger(__name__)
 
 
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
-OmegaConf.register_new_resolver("temp_dir", tempfile.mkdtemp, use_cache=True)
-
+OmegaConf.register_new_resolver("tmpdir", tempfile.mkdtemp, use_cache=True)
 
 header = """
    _____      __    _   __     __  ____             __  

@@ -307,7 +307,8 @@ class SkinNeighborList(Transform):
         if (
             (self.pbc != pbc.numpy()).any()
             or (self.cell != cell.numpy()).any()
-            or ((self.positions - positions.numpy()) ** 2).sum(1).max() > self.cutoff_skin ** 2
+            or ((self.positions - positions.numpy()) ** 2).sum(1).max()
+            > 0.25 * self.cutoff_skin**2
         ):
             self._build(inputs)
             return True
@@ -484,7 +485,9 @@ class RemoveSomeNeighbors(Transform):
 
         inputs[properties.idx_i] = inputs[properties.idx_i][self.removed_nbh_indices]
         inputs[properties.idx_j] = inputs[properties.idx_j][self.removed_nbh_indices]
-        inputs[properties.offsets] = inputs[properties.offsets][self.removed_nbh_indices]
+        inputs[properties.offsets] = inputs[properties.offsets][
+            self.removed_nbh_indices
+        ]
         return inputs
 
 
