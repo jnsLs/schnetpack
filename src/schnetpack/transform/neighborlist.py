@@ -19,8 +19,6 @@ __all__ = [
     "CachedNeighborList",
     "NeighborListTransform",
     "WrapPositions",
-    "RemoveSomeNeighbors",
-    "NeighborlistWrapper",
     "SkinNeighborList",
     "NeighborlistWrapper",
     "RemoveSomeNeighbors",
