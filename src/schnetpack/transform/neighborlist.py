@@ -22,6 +22,8 @@ __all__ = [
     "RemoveSomeNeighbors",
     "NeighborlistWrapper",
     "SkinNeighborList",
+    "NeighborlistWrapper",
+    "RemoveSomeNeighbors",
 ]
 
 import schnetpack as spk
@@ -34,11 +36,21 @@ class CacheException(Exception):
 
 
 class NeighborlistWrapper(Transform):
+    """
+    Wrapper class for neighbor lists. Using this wrapper allows to add multiple postprocessing steps to the neighbor
+    list transform
+    """
+
     def __init__(
         self,
         neighbor_list: Transform,
         nbh_postprocessing: Optional[List[torch.nn.Module]] = None,
     ):
+        """
+        Args:
+            neighbor_list: the neighbor list to use
+            nbh_postprocessing: post-processing transforms for manipulating the neighbor lists provided by neighbor_list
+        """
         super().__init__()
         self.neighbor_list = neighbor_list
         self.nbh_postprocessing = nbh_postprocessing or []
@@ -50,10 +62,6 @@ class NeighborlistWrapper(Transform):
 
         inputs = self.neighbor_list(inputs)
         for postprocess in self.nbh_postprocessing:
-            if hasattr(self.neighbor_list, "enable_update"):
-                postprocess.enable_update = self.neighbor_list.enable_update
-            else:
-                postprocess.enable_update = True
             inputs = postprocess(inputs)
         return inputs
 
@@ -506,13 +514,17 @@ class TorchNeighborList(NeighborListTransform):
 
 class RemoveSomeNeighbors(Transform):
     """
-    Remove all neighbor indices that correspond to interactions between atoms in the slab
+    Remove all neighbor list indices corresponding to interactions between a set of specified atoms. Latter must be
+    contained in the input data.
     """
 
     def __init__(self, selection_name):
+        """
+        Args:
+            selection_name (str): key in the input data corresponding to the set of atoms between which no interactions
+                should be considered.
+        """
         self.selection_name = selection_name
-        self.enable_update = True
-        self.removed_nbh_indices = []
         super().__init__()
 
     def forward(
@@ -520,21 +532,19 @@ class RemoveSomeNeighbors(Transform):
         inputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
 
-        if self.enable_update:
-            n_neighbors = inputs[properties.idx_i].shape[0]
-            slab_indices = inputs[self.selection_name].tolist()
-            self.removed_nbh_indices = []
-            for nbh_idx in range(n_neighbors):
-                i = inputs[properties.idx_i][nbh_idx].item()
-                j = inputs[properties.idx_j][nbh_idx].item()
-                if i not in slab_indices or j not in slab_indices:
-                    self.removed_nbh_indices.append(nbh_idx)
+        n_neighbors = inputs[properties.idx_i].shape[0]
+        slab_indices = inputs[self.selection_name].tolist()
+        kept_nbh_indices = []
+        for nbh_idx in range(n_neighbors):
+            i = inputs[properties.idx_i][nbh_idx].item()
+            j = inputs[properties.idx_j][nbh_idx].item()
+            if i not in slab_indices or j not in slab_indices:
+                kept_nbh_indices.append(nbh_idx)
 
-        inputs[properties.idx_i] = inputs[properties.idx_i][self.removed_nbh_indices]
-        inputs[properties.idx_j] = inputs[properties.idx_j][self.removed_nbh_indices]
-        inputs[properties.offsets] = inputs[properties.offsets][
-            self.removed_nbh_indices
-        ]
+        inputs[properties.idx_i] = inputs[properties.idx_i][kept_nbh_indices]
+        inputs[properties.idx_j] = inputs[properties.idx_j][kept_nbh_indices]
+        inputs[properties.offsets] = inputs[properties.offsets][kept_nbh_indices]
+
         return inputs
 
 
