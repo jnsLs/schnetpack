@@ -276,6 +276,8 @@ class ConsiderOnlySelectedAtoms(nn.Module):
 
         # drop neglected atoms
         pred[output_module.name] = pred[output_module.name][considered_atoms]
-        targets[output_module.target_property] = targets[output_module.target_property][considered_atoms]
+        targets[output_module.target_property] = targets[output_module.target_property][
+            considered_atoms
+        ]
 
         return pred, targets
