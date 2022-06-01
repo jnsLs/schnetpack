@@ -55,7 +55,7 @@ class AtomsConverterError(Exception):
 
 class AtomsConverter:
     """
-    Convert ASE atoms to SchNetPack input batch format for model prediction.
+    Convert ASE atoms to SchNetPack input batch format for model prediction (single sample).
 
     """
 
@@ -105,6 +105,58 @@ class AtomsConverter:
             inputs = transform(inputs)
 
         inputs = _atoms_collate_fn([inputs])
+
+        # Move input batch to device
+        inputs = {p: inputs[p].to(self.device) for p in inputs}
+
+        return inputs
+
+
+class BatchWiseAtomsConverter(AtomsConverter):
+    """
+    Convert list of ASE atoms to SchNetPack input batch format for model prediction (batch of multiple samples).
+
+    """
+
+    def __init__(
+        self,
+        neighbor_list: schnetpack.transform.Transform,
+        device: Union[str, torch.device] = "cpu",
+        dtype: torch.dtype = torch.float32,
+        additional_inputs: Dict[str, torch.Tensor] = None,
+    ):
+        super().__init__(neighbor_list=neighbor_list, device=device, dtype=dtype)
+        self.additional_inputs = additional_inputs or {}
+
+    def __call__(self, atoms_list: List[Atoms]):
+        """
+
+        Args:
+            atoms_list (list): list containing ASE atoms objects of multiple molecules, respectively.
+
+        Returns:
+            dict[str, torch.Tensor]: input batch for model.
+        """
+
+        inputs_batch = []
+        for at_idx, at in enumerate(atoms_list):
+
+            inputs = {
+                properties.n_atoms: torch.tensor([at.get_global_number_of_atoms()]),
+                properties.Z: torch.from_numpy(at.get_atomic_numbers()),
+                properties.R: torch.from_numpy(at.get_positions()),
+                properties.cell: torch.from_numpy(at.get_cell().array),
+                properties.pbc: torch.from_numpy(at.get_pbc()),
+            }
+
+            inputs.update({properties.idx: torch.tensor([at_idx])})
+            inputs.update(self.additional_inputs)
+
+            for transform in self.transforms:
+                inputs = transform(inputs)
+            inputs_batch.append(inputs)
+
+        inputs = _atoms_collate_fn(inputs_batch)
 
         # Move input batch to device
         inputs = {p: inputs[p].to(self.device) for p in inputs}
