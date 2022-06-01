@@ -145,7 +145,10 @@ class AtomisticTask(pl.LightningModule):
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
-        targets["considered_atoms"] = batch["considered_atoms"]
+        try:
+            targets["considered_atoms"] = batch["considered_atoms"]
+        except:
+            pass
 
         pred = self.predict_without_postprocessing(batch)
         pred, targets = self.apply_constraints(pred, targets)
@@ -163,7 +166,10 @@ class AtomisticTask(pl.LightningModule):
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
-        targets["considered_atoms"] = batch["considered_atoms"]
+        try:
+            targets["considered_atoms"] = batch["considered_atoms"]
+        except:
+            pass
 
         pred = self.predict_without_postprocessing(batch)
         pred, targets = self.apply_constraints(pred, targets)
@@ -182,7 +188,10 @@ class AtomisticTask(pl.LightningModule):
             output.target_property: batch[output.target_property]
             for output in self.outputs
         }
-        targets["considered_atoms"] = batch["considered_atoms"]
+        try:
+            targets["considered_atoms"] = batch["considered_atoms"]
+        except:
+            pass
 
         pred = self.predict_without_postprocessing(batch)
         pred, targets = self.apply_constraints(pred, targets)
