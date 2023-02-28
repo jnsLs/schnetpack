@@ -305,6 +305,9 @@ class SkinNeighborList(Transform):
         inputs = self.distance_calculator(inputs)
         inputs = self._remove_neighbors_in_skin(inputs)
 
+        if update_required:
+            print("updated nbh list")
+
         return inputs
 
     def reset(self):

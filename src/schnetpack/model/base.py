@@ -9,6 +9,9 @@ from schnetpack.utils import as_dtype
 import torch
 import torch.nn as nn
 
+from time import time
+
+
 __all__ = ["AtomisticModel", "NeuralNetworkPotential"]
 
 
@@ -169,6 +172,10 @@ class NeuralNetworkPotential(AtomisticModel):
         self.collect_outputs()
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+
+        self.n_iterations += 1
+        ts = time()
+
         # initialize derivatives for response properties
         inputs = self.initialize_derivatives(inputs)
 
@@ -183,5 +190,8 @@ class NeuralNetworkPotential(AtomisticModel):
         # apply postprocessing (if enabled)
         inputs = self.postprocess(inputs)
         results = self.extract_outputs(inputs)
+
+        te = time()
+        self.total_time += te - ts
 
         return results
