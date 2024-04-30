@@ -64,29 +64,84 @@ class Dense(nn.Linear):
             y = self.activation(y)
             return y
 
-    def _forward_xai(self, input:torch.Tensor):
-        y = F.linear(input, self.weight, self.bias)
-        y = self.activation(y)
+    def _forward_xai(self, input:torch.Tensor, rule='gamma_stable'):
+        if rule == 'gen_gamma':
+            # We apply the general gamma rule
+            y = F.linear(input, self.weight, self.bias)
+            y = self.activation(y)
 
-        # positive output
-        yp = F.linear(input.clamp(0),
-                      self.weight + self.gamma*self.weight.clamp(0),
-                      self.bias + self.gamma*self.bias.clamp(0)) # positive activation
-        yp += F.linear( -(-input).clamp(0),
-                       self.weight + self.gamma*-(-self.weight).clamp(0) ) # negative activation
-        yp *= (y > 1e-6).float()
+            # positive output
+            yp = F.linear(input.clamp(0),
+                          self.weight + self.gamma*self.weight.clamp(0),
+                          self.bias + self.gamma*self.bias.clamp(0)) # positive activation
+            yp += F.linear( -(-input).clamp(0),
+                           self.weight + self.gamma*-(-self.weight).clamp(0)) # negative activation
+            yp *= (y > 1e-6).float()
 
-        # negative output
-        ym = F.linear(input.clamp(0),
-                      self.weight + self.gamma*(-(-self.weight).clamp(0)),
-                      self.bias + self.gamma*(-(-self.bias).clamp(0)) ) # positive activation
+            # negative output
+            ym = F.linear(input.clamp(0),
+                          self.weight + self.gamma*(-(-self.weight).clamp(0)),
+                          self.bias + self.gamma*(-(-self.bias).clamp(0)) ) # positive activation
+            ym += F.linear( -(-input).clamp(0),
+                          self.weight + self.gamma*self.weight.clamp(0)) # negative activation
+            ym *= (y < -1e-6 ).float()
 
-        ym += F.linear( -(-input).clamp(0),
-                      self.weight + self.gamma*self.weight.clamp(0)) # negative activation
-        ym *= (y < -1e-6 ).float()
+            yo = yp + ym
 
-        yo = yp + ym
-        
-        out = yo * torch.nan_to_num(y/yo).detach()
+            out = yo * torch.nan_to_num(y/yo).detach()
+
+        elif rule == 'gamma_stable':
+            # We use the rule where we normalize the relevance either by
+            # the bias or by the sum over the activations
+            y = F.linear(input, self.weight, self.bias)
+            y = self.activation(y)
+
+            # positive output
+            yp = F.linear(input.clamp(0),
+                          self.weight + self.gamma*self.weight.clamp(0),
+                          self.bias + self.gamma*self.bias.clamp(0)) # positive activation
+            yp += F.linear( -(-input).clamp(0),
+                           self.weight + self.gamma*-(-self.weight).clamp(0)) # negative activation
+            yp *= (y > 1e-6).float()
+
+            # Now the denominator
+            ypb = F.linear(input.clamp(0),
+                          self.weight + self.gamma*self.weight.clamp(0)) # positive activation
+            ypb += F.linear( -(-input).clamp(0),
+                           self.weight + self.gamma*-(-self.weight).clamp(0)) # negative activation
+
+            ypb = torch.maximum(ypb,
+                    torch.vstack(ypb.shape[0]*[self.bias + self.gamma*self.bias.clamp(0)]))
+
+            ypb *= (y > 1e-6).float()
+
+            # negative output
+            ym = F.linear(input.clamp(0),
+                          self.weight + self.gamma*(-(-self.weight).clamp(0)),
+                          self.bias + self.gamma*(-(-self.bias).clamp(0)) ) # positive activation
+
+            ym += F.linear( -(-input).clamp(0),
+                          self.weight + self.gamma*self.weight.clamp(0)) # negative activation
+            ym *= (y < -1e-6 ).float()
+
+            # And the denominator
+            ymb = F.linear(input.clamp(0),
+                          self.weight + self.gamma*(-(-self.weight).clamp(0))) # positive activation
+            ymb += F.linear( -(-input).clamp(0),
+                          self.weight + self.gamma*self.weight.clamp(0)) # negative activation
+
+            ymb = torch.minimum(ymb,
+                    torch.vstack(ypb.shape[0]*[ self.bias + self.gamma*(-(-self.bias).clamp(0)) ]))
+
+            ymb *= (y < -1e-6 ).float()
+
+            # Add positiv and negative up
+            yo = yp + ym
+            yob = ypb + ymb
+
+            out = yo * torch.nan_to_num(y/yob).detach()
+        else:
+            raise Exception(f"{rule} rule doesn't exist.")
+
 
         return out

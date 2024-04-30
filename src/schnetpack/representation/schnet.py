@@ -58,6 +58,7 @@ class SchNetInteraction(nn.Module):
         Returns:
             atom features after interaction
         """
+        # import pdb; pdb.set_trace()
         x = self.in2f(x)
         Wij = self.filter_network(f_ij)
         Wij = Wij * rcut_ij[:, None]
@@ -66,7 +67,7 @@ class SchNetInteraction(nn.Module):
         x_j = x[idx_j]
         x_ij = x_j * Wij
         x = scatter_add(x_ij, idx_i, dim_size=x.shape[0])
-
+        # import pdb; pdb.set_trace()
         x = self.f2out(x)
         return x
 
