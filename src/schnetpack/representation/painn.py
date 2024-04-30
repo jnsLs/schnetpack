@@ -66,6 +66,9 @@ class PaiNNInteraction(nn.Module):
 
         return q, mu
 
+    def _set_xai(self, xai_mod: bool, gamma: float):
+        self.interatomic_context_net[0]._set_xai(xai_mod, gamma)
+
 
 class PaiNNMixing(nn.Module):
     r"""PaiNN interaction block for mixing on atom features."""
@@ -115,6 +118,9 @@ class PaiNNMixing(nn.Module):
         q = q + dq_intra + dqmu_intra
         mu = mu + dmu_intra
         return q, mu
+
+    def _set_xai(self, xai_mod: bool, gamma: float):
+        self.intraatomic_context_net[0]._set_xai(xai_mod, gamma)
 
 
 class PaiNN(nn.Module):
