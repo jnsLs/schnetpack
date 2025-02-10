@@ -170,6 +170,11 @@ class MaterialsProject(DownloadableASEAtomsData):
                             MaterialsProject.MaterialId: str(q.material_id),
                         }
                     )
+                    # key_value_pairs_list.append(
+                    #     {
+                    #         "material_id": q.material_id,
+                    #     }
+                    # )
 
         logging.info("Write atoms to db...")
         self.add_systems(
