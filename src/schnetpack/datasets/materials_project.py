@@ -88,30 +88,11 @@ class MaterialsProject(DownloadableASEAtomsData):
                 "to get an API key."
             )
 
-<<<<<<< HEAD
         if len(apikey) == 16:
             raise AtomsDataError(
                 "You are using a legacy API key. This API is deprecated and no longer "
                 "supported by Materials Project. Please use the next-gen API instead. "
                 "Visit https://next-gen.materialsproject.org/ to get a valid API key."
-=======
-    def prepare_data(self):
-        if not os.path.exists(self.datapath):
-            property_unit_dict = {
-                MaterialsProject.EformationPerAtom: "eV",
-                MaterialsProject.EPerAtom: "eV",
-                MaterialsProject.BandGap: "eV",
-                MaterialsProject.TotalMagnetization: "None",
-                MaterialsProject.MaterialId: "None",
-                MaterialsProject.CreatedAt: "None"
-            }
-
-            dataset = create_dataset(
-                datapath=self.datapath,
-                format=self.format,
-                distance_unit="Ang",
-                property_unit_dict=property_unit_dict,
->>>>>>> cfc40077 (Merged key_value pair and property list in MaterialsProject)
             )
 
         if len(apikey) != 32:
@@ -194,10 +175,6 @@ class MaterialsProject(DownloadableASEAtomsData):
         self.add_systems(
             atoms_list=atoms_list,
             property_list=properties_list,
-<<<<<<< HEAD
             atoms_metadata_list=atoms_metadata_list,
-=======
-            #key_value_list=key_value_pairs_list,
->>>>>>> cfc40077 (Merged key_value pair and property list in MaterialsProject)
         )
         logging.info("Done.")
