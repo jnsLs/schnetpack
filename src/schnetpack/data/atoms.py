@@ -77,7 +77,6 @@ class ASEAtomsData(torch.utils.data.Dataset):
             raise AtomsDataError(f"ASE DB does not exist at {self.datapath}")
 
         self._check_db()
-        self.conn = connect(self.datapath, use_lock_file=False)
 
         self.transforms = list(transforms or [])
         self.train_transforms = list(train_transforms) if train_transforms else None
