@@ -77,6 +77,7 @@ class ASEAtomsData(torch.utils.data.Dataset):
             raise AtomsDataError(f"ASE DB does not exist at {self.datapath}")
 
         self._check_db()
+        self.conn = connect(self.datapath, use_lock_file=False)
 
         self.transforms = list(transforms or [])
         self.train_transforms = list(train_transforms) if train_transforms else None
@@ -512,6 +513,14 @@ class DownloadableASEAtomsData(ASEAtomsData, ABC):
                 raise AtomsDataError(
                     f"ASE DB does not exist at {self.datapath}. "
                     "Pass download=True to download the dataset."
+                )
+        for key in key_val:
+            if key not in valid_props:
+                logger.warning(
+                    f"Property `{key}` is not a defined property for this dataset and "
+                    + f"will be ignored. If it should be included, it has to be "
+                    + f"provided together with its unit when calling "
+                    + f"AseAtomsData.create()."
                 )
 
             # Downloads happen in __init__, which every DDP rank executes.
