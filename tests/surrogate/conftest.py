@@ -91,7 +91,7 @@ def student_model():
             spk.atomistic.DampingFactor(
                 output_key=spk.properties.damping_factor,
                 n_in=N_ATOM_BASIS,
-                aggregation_mode="positive",
+                positivity="abs",
             ),
         ],
         postprocessors=[spk.transform.CastTo64()],

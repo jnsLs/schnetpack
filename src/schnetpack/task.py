@@ -285,8 +285,12 @@ class AtomisticTask(pl.LightningModule):
         return pred
 
     def configure_optimizers(self):
+        # Frozen parameters are skipped rather than handed over with grad None:
+        # a task may hold whole submodules it never trains, such as the
+        # reference potential in AtomisticTaskSurrogate.
         optimizer = self.optimizer_cls(
-            params=self.parameters(), **self.optimizer_kwargs
+            params=(p for p in self.parameters() if p.requires_grad),
+            **self.optimizer_kwargs,
         )
 
         if self.scheduler_cls:
@@ -404,10 +408,41 @@ class AtomisticTaskSurrogate(AtomisticTask):
         )
         self.targets = NewtonStepTargets(ref_model_path=ref_model_path)
 
+    #: state_dict prefix of the reference model, excluded from checkpoints
+    _ref_model_prefix = "targets.ref_model."
+
     @property
     def ref_model(self):
         """The frozen reference potential generating the targets."""
         return self.targets.ref_model
+
+    def on_save_checkpoint(self, checkpoint):
+        """Drop the reference model from the checkpoint.
+
+        It is a submodule so that Lightning moves it to the right device, but
+        it never changes during training, and writing a second full potential
+        into every checkpoint is both wasteful and misleading. It is restored
+        from ``ref_model_path`` when the task is rebuilt.
+        """
+        super().on_save_checkpoint(checkpoint)
+        state_dict = checkpoint.get("state_dict")
+        if state_dict is not None:
+            for key in [k for k in state_dict if k.startswith(self._ref_model_prefix)]:
+                del state_dict[key]
+
+    def on_load_checkpoint(self, checkpoint):
+        """Put the reference model back, so strict loading still succeeds.
+
+        ``__init__`` has already rebuilt it from ``ref_model_path`` by the time
+        this runs, so its weights are taken from there rather than from the
+        checkpoint, which no longer carries them.
+        """
+        super().on_load_checkpoint(checkpoint)
+        state_dict = checkpoint.get("state_dict")
+        if state_dict is not None:
+            for key, value in self.state_dict().items():
+                if key.startswith(self._ref_model_prefix):
+                    state_dict.setdefault(key, value)
 
     def _step(self, batch, subset: str):
         """Shared body of the training, validation and test steps."""

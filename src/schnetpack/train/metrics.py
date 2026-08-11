@@ -121,14 +121,35 @@ class TensorDiagonalMeanAbsoluteError(Metric):
 
 
 class IsDescendingMetric(Metric):
-    """ """
+    """How far a predicted step points uphill rather than downhill.
+
+    Averages the negative cosine between the prediction and the reference
+    forces, so zero means orthogonal, -1 means perfectly aligned with the
+    forces and +1 means pointing exactly the wrong way. Being a cosine, it
+    says nothing about the length of the step.
+
+    With ``clamp_at_zero`` the ascending contributions are kept and the
+    descending ones are floored at zero, which is exactly
+    :class:`~schnetpack.train.loss.DescendingLoss`. Without it, descending
+    predictions contribute negatively and the metric is *signed*: it reports
+    the mean ascent, and a well-trained model drives it towards -1.
+    """
 
     is_differentiable = True
     higher_is_better = False
-    sum_abs_error: torch.Tensor
+    #: signed unless clamp_at_zero is set, so not an absolute error
+    sum_ascent: torch.Tensor
     total: torch.Tensor
 
     def __init__(self, margin=0.0, eps=1e-8, mode="hinge", clamp_at_zero=False) -> None:
+        """
+        Args:
+            margin: shifts the hinge, requiring the step to descend by at least
+                this much rather than merely not ascend.
+            eps: stability constant for the norms in the denominator.
+            mode: only ``"hinge"`` is implemented.
+            clamp_at_zero: if True, floor descending contributions at zero.
+        """
         super().__init__(dist_sync_on_step=False)
 
         self.margin = margin
@@ -136,7 +157,7 @@ class IsDescendingMetric(Metric):
         self.mode = mode
         self.clamp_at_zero = clamp_at_zero
 
-        self.add_state("sum_abs_error", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("sum_ascent", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
     def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
@@ -155,14 +176,13 @@ class IsDescendingMetric(Metric):
 
         if self.mode == "hinge":
             cos = dot / (preds_norm * target_norm + self.eps)
+            ascent = -cos + self.margin
             if self.clamp_at_zero:
-                loss = F.relu(-cos + self.margin).sum()
-            else:
-                loss = (-cos + self.margin).sum()
+                ascent = F.relu(ascent)
         else:
             raise NotImplementedError("mode not implemented")
 
-        self.sum_abs_error += loss
+        self.sum_ascent += ascent.sum()
         self.total += n_obs
 
     def compute(self) -> torch.Tensor:
@@ -170,7 +190,6 @@ class IsDescendingMetric(Metric):
         Compute the final metric.
 
         Returns:
-            torch.Tensor: mean absolute error of diagonal or offdiagonal elements.
+            torch.Tensor: mean ascent over all predictions seen so far.
         """
-        # compute final result
-        return _mean_absolute_error_compute(self.sum_abs_error, self.total)
+        return self.sum_ascent / self.total

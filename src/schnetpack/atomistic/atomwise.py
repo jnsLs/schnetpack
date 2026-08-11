@@ -1,5 +1,6 @@
 from typing import Sequence, Union, Callable, Dict, Optional, List
 
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -189,6 +190,16 @@ class Atomwise(nn.Module):
 
 
 class DampingFactor(Atomwise):
+    """Per-molecule damping factor for a damped Newton step.
+
+    Provides the ``lambda`` in ``(H + lambda I) p``, in one of three ways:
+    held fixed, learned as a single global value shared by all molecules, or
+    predicted per molecule from the representation. The damping must stay
+    non-negative for ``H + lambda I`` to remain positive definite, so the
+    learned variant is parameterised in log space and the predicted variant is
+    passed through ``positivity``.
+    """
+
     def __init__(
         self,
         n_in: int,
@@ -201,7 +212,33 @@ class DampingFactor(Atomwise):
         per_atom_output_key: Optional[str] = None,
         fixed_damping_factor: Optional[float] = None,
         init_learnable_damping_factor: Optional[float] = None,
+        positivity: Optional[str] = None,
     ):
+        """
+        Args:
+            fixed_damping_factor: If given, use this value and predict nothing.
+            init_learnable_damping_factor: If given, learn a single global
+                damping factor starting from this value.
+            positivity: How to make a predicted damping factor non-negative,
+                one of ``"abs"`` or ``"softplus"``. ``"abs"`` has a kink at
+                zero, ``"softplus"`` is smooth.
+            aggregation_mode: as in :class:`Atomwise`. Passing ``"positive"``
+                is deprecated; use ``positivity="abs"`` instead.
+        """
+        if aggregation_mode == "positive":
+            warnings.warn(
+                'aggregation_mode="positive" is deprecated, use '
+                'aggregation_mode="sum" together with positivity="abs"',
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            aggregation_mode, positivity = "sum", positivity or "abs"
+
+        if positivity not in (None, "abs", "softplus"):
+            raise ValueError(
+                f"unknown positivity {positivity!r}, expected 'abs' or 'softplus'"
+            )
+
         super(DampingFactor, self).__init__(
             n_in=n_in,
             n_out=n_out,
@@ -212,9 +249,17 @@ class DampingFactor(Atomwise):
             output_key=output_key,
             per_atom_output_key=per_atom_output_key,
         )
-        self.fixed_damping_factor = fixed_damping_factor
-        if fixed_damping_factor:
-            self.fixed_damping_factor = torch.tensor([fixed_damping_factor])
+        self.positivity = positivity
+
+        # Registered as a buffer rather than kept as a bare tensor so that it
+        # follows the model to the right device. Only registered when actually
+        # used, to keep it out of the state_dict of models that do not use it.
+        if fixed_damping_factor is not None:
+            self.register_buffer(
+                "fixed_damping_factor", torch.tensor([fixed_damping_factor])
+            )
+        else:
+            self.fixed_damping_factor = None
 
         self.init_learnable_damping_factor = init_learnable_damping_factor
         self.learnable_damping_factor = None
@@ -225,13 +270,12 @@ class DampingFactor(Atomwise):
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         n_mols = inputs[properties.n_atoms].shape[0]
-        if self.fixed_damping_factor:
-            self.fixed_damping_factor = self.fixed_damping_factor.to(
-                inputs[properties.n_atoms].device
-            )
+        # `is not None`, not truthiness: a damping factor of 0.0, or a learnable
+        # one initialised to 1.0 (log 1 == 0), is a legitimate configuration.
+        if self.fixed_damping_factor is not None:
             inputs[self.output_key] = self.fixed_damping_factor.repeat(n_mols)
 
-        elif self.learnable_damping_factor:
+        elif self.learnable_damping_factor is not None:
             inputs[self.output_key] = torch.exp(self.learnable_damping_factor).repeat(
                 n_mols
             )
@@ -241,8 +285,10 @@ class DampingFactor(Atomwise):
 
             # a damping factor has to be non-negative for (H + lambda I) to
             # stay positive definite
-            if self.aggregation_mode == "positive":
+            if self.positivity == "abs":
                 inputs[self.output_key] = abs(inputs[self.output_key])
+            elif self.positivity == "softplus":
+                inputs[self.output_key] = F.softplus(inputs[self.output_key])
         return inputs
 
 

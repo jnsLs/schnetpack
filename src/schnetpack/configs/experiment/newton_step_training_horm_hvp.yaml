@@ -61,7 +61,7 @@ model:
     - _target_: schnetpack.atomistic.DampingFactor
       output_key: ${globals.damping_factor_key}
       n_in: ${model.representation.n_atom_basis}
-      aggregation_mode: positive
+      positivity: abs
   postprocessors:
     - _target_: schnetpack.transform.CastTo64
 

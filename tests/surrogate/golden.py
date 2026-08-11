@@ -95,7 +95,7 @@ def _optimise(task, batch) -> Dict[str, torch.Tensor]:
     """Run ``N_OPTIM_STEPS`` AdamW updates and record the resulting parameters."""
     out: Dict[str, torch.Tensor] = {}
     torch.manual_seed(1234)
-    optimizer = task.optimizer_cls(params=task.parameters(), **task.optimizer_kwargs)
+    optimizer = task.configure_optimizers()
 
     for step in range(N_OPTIM_STEPS):
         optimizer.zero_grad(set_to_none=True)
