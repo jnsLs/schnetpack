@@ -8,7 +8,7 @@ from torchmetrics import Metric
 
 from schnetpack import properties
 from schnetpack.model.base import AtomisticModel
-from schnetpack.surrogate import NewtonStepTargets
+from schnetpack.train.surrogate import NewtonStepTargets
 
 
 __all__ = [
@@ -353,7 +353,7 @@ class AtomisticTaskSurrogate(AtomisticTask):
 
     Unlike :class:`AtomisticTask`, the regression targets are not read from the
     batch but generated during the step by a frozen reference potential (see
-    :mod:`schnetpack.surrogate`). Each step therefore runs two models in a
+    :mod:`schnetpack.train.surrogate`). Each step therefore runs two models in a
     fixed order:
 
     1. the student, predicting a trial step ``p`` and a damping factor
