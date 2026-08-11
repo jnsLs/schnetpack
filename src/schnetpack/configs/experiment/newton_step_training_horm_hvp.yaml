@@ -1,0 +1,93 @@
+# @package _global_
+
+defaults:
+  - /callbacks@callbacks.grad_norm: grad_norm
+  - override /model: nnp
+  - override /data: custom
+
+run.path: runs
+
+globals:
+  cutoff: 5.
+  lr: 1e-3
+  energy_key: energy
+  forces_key: forces
+  newtonstep_key: newton_step_pd
+  distance_unit: Ang
+  energy_unit: kcal/mol
+
+data:
+  distance_unit: ${globals.distance_unit}
+  property_units:
+    energy: ${globals.energy_unit}
+    forces: ${globals.energy_unit}/${globals.distance_unit}
+  transforms:
+    - _target_: schnetpack.transform.CachedNeighborList
+      cache_path: ${run.work_dir}/cache
+      cache_workdir: ${tmpdir:}/cache
+      keep_cache: False
+      neighbor_list:
+        _target_: schnetpack.transform.MatScipyNeighborList
+        cutoff: ${globals.cutoff}
+    - _target_: schnetpack.transform.CastTo32
+  test_transforms:
+    - _target_: schnetpack.transform.MatScipyNeighborList
+      cutoff: ${globals.cutoff}
+    - _target_: schnetpack.transform.CastTo32
+
+model:
+  output_modules:
+    - _target_: schnetpack.atomistic.NewtonStep
+      newton_step_key: ${globals.newtonstep_key}
+      n_in: ${model.representation.n_atom_basis}
+      n_hidden: 60
+    - _target_: schnetpack.atomistic.DampingFactor
+      output_key: damping_factor
+      n_in: ${model.representation.n_atom_basis}
+      aggregation_mode: positive
+  postprocessors:
+    - _target_: schnetpack.transform.CastTo64
+
+task:
+  _target_: schnetpack.task.AtomisticTaskSurrogate
+  ref_model_path: /home/Jonas/hessian/newton_step/training/runs/Ac_Ala3_NHMe_all/best_model
+  optimizer_cls: torch.optim.AdamW                                        
+  optimizer_args:                                                         
+    lr: ${globals.lr}                                                     
+    weight_decay: 0.01  
+  outputs:
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.forces_key}
+      target_property: target_forces
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mae:
+          _target_: torchmetrics.regression.MeanAbsoluteError
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 1.00
+    - _target_: schnetpack.task.ModelOutput
+      name: damping_factor
+      target_property: target_damping_factor
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mae:
+          _target_: torchmetrics.regression.MeanAbsoluteError
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 0.00001
+    - _target_: schnetpack.task.ModelOutput
+      name: newton_step_pd
+      target_property: target_forces
+      loss_fn:
+        _target_: schnetpack.train.loss.DescendingLoss
+      metrics:
+        ascent_loss:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: True
+        mean_ascent:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: False
+      loss_weight: 0.0

@@ -71,3 +71,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 schnetpack = ["configs/**/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: tests that take more than a few seconds (deselect with '-m \"not slow\"')",
+    "integration: tests that wire several components together, e.g. via hydra configs",
+]
