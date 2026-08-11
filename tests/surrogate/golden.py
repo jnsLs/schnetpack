@@ -11,17 +11,27 @@ from typing import Dict
 
 import torch
 
+from schnetpack import properties
+
 #: semantic name -> the key the pipeline actually uses.
 KEYS = {
     # student predictions
-    "newton_step": "newton_step_pd",
-    "damping_factor": "damping_factor",
+    "newton_step": properties.newton_step,
+    "damping_factor": properties.damping_factor,
     # reference-model outputs
-    "ref_forces": "target_forces",  # F = -grad E
-    "damped_hvp": "forces",  # (H + lambda I) p
+    "ref_forces": properties.ref_forces,  # F = -grad E
+    "damped_hvp": properties.damped_hvp,  # (H + lambda I) p
     # regression targets built by the task
-    "target_ref_forces": "target_forces",
+    "target_ref_forces": properties.ref_forces,
     "target_damping_factor": "target_damping_factor",
+}
+
+#: concrete ModelOutput name -> stable label used in the golden file, so that
+#: renaming an output does not invalidate the recorded values.
+OUTPUT_LABELS = {
+    KEYS["damped_hvp"]: "damped_hvp",
+    KEYS["damping_factor"]: "damping_factor",
+    KEYS["newton_step"]: "newton_step",
 }
 
 N_OPTIM_STEPS = 3
@@ -45,15 +55,15 @@ def collect_golden(task, batch) -> Dict[str, torch.Tensor]:
 
     targets = {
         KEYS["target_ref_forces"]: batch[KEYS["ref_forces"]].detach(),
-        KEYS["target_damping_factor"]: torch.zeros_like(
-            batch[KEYS["damping_factor"]]
-        ),
+        KEYS["target_damping_factor"]: torch.zeros_like(batch[KEYS["damping_factor"]]),
     }
 
     # ---- per-output losses and the composite loss -----------------------
     for output in task.outputs:
         contribution = output.calculate_loss(batch, targets)
-        golden[f"loss/{output.name}"] = torch.as_tensor(contribution).detach().clone()
+        golden[f"loss/{OUTPUT_LABELS[output.name]}"] = (
+            torch.as_tensor(contribution).detach().clone()
+        )
     loss = task.loss_fn(batch, targets)
     golden["loss/total"] = loss.detach().clone()
 
@@ -62,7 +72,9 @@ def collect_golden(task, batch) -> Dict[str, torch.Tensor]:
         for name, metric in output.metrics["train"].items():
             metric.reset()
             metric(batch[output.name], targets[output.target_property])
-            golden[f"metric/{output.name}/{name}"] = metric.compute().detach().clone()
+            golden[f"metric/{OUTPUT_LABELS[output.name]}/{name}"] = (
+                metric.compute().detach().clone()
+            )
             metric.reset()
 
     # ---- gradients ------------------------------------------------------

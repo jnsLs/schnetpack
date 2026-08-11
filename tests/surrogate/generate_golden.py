@@ -44,10 +44,14 @@ def main() -> None:
     tmp.rmdir()
 
     print(f"wrote {out} with {len(golden)} entries")
-    print("git revision:", subprocess.run(
-        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
-        capture_output=True, text=True,
-    ).stdout.strip())
+    print(
+        "git revision:",
+        subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
 
 
 if __name__ == "__main__":

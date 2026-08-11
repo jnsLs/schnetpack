@@ -113,42 +113,6 @@ class ForceAggregation(nn.Module):
         factor = self.damping * self.energy_conversion / self.position_conversion**2
         return torch.eye(n_atoms.item() * 3, device=hessian.device) * factor
 
-    def _modified_cholesky(self, hessian, beta=1e-8):
-        """
-        Perform a modified Cholesky decomposition on matrix H to ensure positive definiteness.
-        H: Input Hessian matrix (must be symmetric)
-        beta: Small positive constant to ensure positive definiteness
-        Returns: L such that H ≈ L @ L.T and L is lower triangular
-        """
-        n = hessian.shape[0]
-        L = torch.zeros_like(hessian, device=hessian.device)
-        D = torch.zeros(n, device=hessian.device)
-
-        for j in range(n):
-            dj = hessian[j, j] - torch.sum(L[j, :j] ** 2 * D[:j])
-            D[j] = max(abs(dj), beta)
-            L[j, j] = 1.0
-
-            for i in range(j + 1, n):
-                L[i, j] = (hessian[i, j] - torch.sum(L[i, :j] * L[j, :j] * D[:j])) / D[
-                    j
-                ]
-
-        H_new = L @ torch.diag(D) @ L.T
-        return H_new
-
-    def eigenvalue_modification(self, hessian):
-        eigvals, eigvectors = torch.linalg.eigh(hessian)
-
-        min_eigval = torch.min(eigvals)
-
-        cutoff = 1e-3
-        # modified_eigvals = torch.nn.functional.softplus(eigvals - cutoff) + cutoff
-        modified_eigvals = torch.abs(eigvals)
-        # modified_eigvals = torch.maximum(eigvals, torch.tensor([1.0], device=hessian.device))
-
-        return eigvectors.T @ torch.diag(modified_eigvals) @ eigvectors
-
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         forces = []
         repeats = inputs["_n_atoms"] ** 2 * 9
@@ -164,16 +128,9 @@ class ForceAggregation(nn.Module):
 
             # build hessian matrix from flat tensor
             hess = hess.reshape(-1, int(hess.shape[0] ** 0.5))
-            # herror = hessian.T - hessian
-            # hessian += 0.5 * herror
-            # assert check_symmetric(hessian)
-            # hessian = hessian[None]
 
             damping_matrix = self._damping_strategy(hess)
             f = hess @ ns + damping_matrix @ ns
-
-            # hess_pd = self.eigenvalue_modification(hess)
-            # f = hess_pd @ ns
 
             forces.append(f.reshape(-1, 3))
         inputs[self.output_key] = torch.cat(forces, dim=0)

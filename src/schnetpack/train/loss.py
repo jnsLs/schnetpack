@@ -19,11 +19,15 @@ class ScaledMSELoss(nn.MSELoss):
 
 
 class DescendingLoss(nn.Module):
-    reduction: str
+    """Penalises predicted steps that do not point downhill.
+
+    The hinge is on the cosine between the predicted step and the reference
+    forces, so the loss is scale invariant: it constrains the direction of the
+    step only, never its length.
+    """
 
     def __init__(self, margin=0.0, eps=1e-8, mode="hinge") -> None:
         super().__init__()
-        self.reduction = "mean"
         self.margin = margin
         self.eps = eps
         self.mode = mode

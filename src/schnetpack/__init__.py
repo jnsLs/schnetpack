@@ -12,6 +12,7 @@ from schnetpack import interfaces
 from schnetpack import nn
 from schnetpack import train
 from schnetpack import model
+from schnetpack import surrogate
 from schnetpack.units import *
 from schnetpack.task import *
 from schnetpack import md

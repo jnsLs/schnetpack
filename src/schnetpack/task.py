@@ -6,9 +6,9 @@ import torch
 from torch import nn as nn
 from torchmetrics import Metric
 
+from schnetpack import properties
 from schnetpack.model.base import AtomisticModel
-from schnetpack.utils.compatibility import load_model
-import schnetpack as spk
+from schnetpack.surrogate import NewtonStepTargets
 
 
 __all__ = [
@@ -205,25 +205,25 @@ class AtomisticTask(pl.LightningModule):
                 pred, targets = constraint(pred, targets, output)
         return pred, targets
 
-    def training_step(self, batch, batch_idx):
+    #: Extra entries some losses and constraints need alongside the regression
+    #: targets. Not every batch carries them, so they are passed on when present.
+    optional_target_keys = ("considered_atoms", "inv_hessian", properties.idx_m)
 
+    def _collect_targets(self, batch):
+        """Gather the regression targets for all supervised outputs."""
         targets = {
             output.target_property: batch[output.target_property]
             for output in self.outputs
             if not isinstance(output, UnsupervisedModelOutput)
         }
-        try:
-            targets["considered_atoms"] = batch["considered_atoms"]
-        except:
-            pass
-        try:
-            targets["inv_hessian"] = batch["inv_hessian"]
-        except:
-            pass
-        try:
-            targets["_idx_m"] = batch["_idx_m"]
-        except:
-            pass
+        for key in self.optional_target_keys:
+            if key in batch:
+                targets[key] = batch[key]
+        return targets
+
+    def training_step(self, batch, batch_idx):
+
+        targets = self._collect_targets(batch)
 
         pred = self.predict_without_postprocessing(batch)
         pred, targets = self.apply_constraints(pred, targets)
@@ -237,23 +237,7 @@ class AtomisticTask(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
 
-        targets = {
-            output.target_property: batch[output.target_property]
-            for output in self.outputs
-            if not isinstance(output, UnsupervisedModelOutput)
-        }
-        try:
-            targets["considered_atoms"] = batch["considered_atoms"]
-        except:
-            pass
-        try:
-            targets["inv_hessian"] = batch["inv_hessian"]
-        except:
-            pass
-        try:
-            targets["_idx_m"] = batch["_idx_m"]
-        except:
-            pass
+        targets = self._collect_targets(batch)
 
         pred = self.predict_without_postprocessing(batch)
         pred, targets = self.apply_constraints(pred, targets)
@@ -275,23 +259,7 @@ class AtomisticTask(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
 
-        targets = {
-            output.target_property: batch[output.target_property]
-            for output in self.outputs
-            if not isinstance(output, UnsupervisedModelOutput)
-        }
-        try:
-            targets["considered_atoms"] = batch["considered_atoms"]
-        except:
-            pass
-        try:
-            targets["inv_hessian"] = batch["inv_hessian"]
-        except:
-            pass
-        try:
-            targets["_idx_m"] = batch["_idx_m"]
-        except:
-            pass
+        targets = self._collect_targets(batch)
 
         pred = self.predict_without_postprocessing(batch)
         pred, targets = self.apply_constraints(pred, targets)
@@ -377,7 +345,26 @@ class AtomisticTask(pl.LightningModule):
 
 
 class AtomisticTaskSurrogate(AtomisticTask):
-    """ """
+    """Trains a model to predict Newton steps against on-the-fly targets.
+
+    Unlike :class:`AtomisticTask`, the regression targets are not read from the
+    batch but generated during the step by a frozen reference potential (see
+    :mod:`schnetpack.surrogate`). Each step therefore runs two models in a
+    fixed order:
+
+    1. the student, predicting a trial step ``p`` and a damping factor
+       ``lambda``;
+    2. the reference model, which contracts its Hessian with ``p`` to give
+       ``(H + lambda I) p`` and supplies the forces ``F = -grad E``.
+
+    The loss drives the two together, which is the residual of the damped
+    Newton system, so the student learns to solve it without ever forming or
+    inverting a Hessian.
+
+    Note:
+        The order matters and cannot be swapped: the reference model reads the
+        student's predictions out of the batch.
+    """
 
     def __init__(
         self,
@@ -402,6 +389,8 @@ class AtomisticTaskSurrogate(AtomisticTask):
             scheduler_monitor: name of metric to be observed for ReduceLROnPlateau
             warmup_steps: number of steps used to increase the learning rate from zero
               linearly to the target learning rate at the beginning of training
+            ref_model_path: path to the frozen reference potential used to build
+              the Newton-step targets. Required.
         """
         super().__init__(
             model=model,
@@ -413,81 +402,47 @@ class AtomisticTaskSurrogate(AtomisticTask):
             scheduler_monitor=scheduler_monitor,
             warmup_steps=warmup_steps,
         )
-        self.ref_model = load_model(ref_model_path, device=self.device)
-        self.ref_model.output_modules[1] = spk.atomistic.HVP()
-        self.ref_model.model_outputs = ["forces", "target_forces"]
-        self.ref_model.do_postprocessing = False
-        # self.ref_model.eval()
-        # print(self.ref_model)
-        for p in self.ref_model.parameters():
-            p.requires_grad = False
-        self.ref_model.train()
+        self.targets = NewtonStepTargets(ref_model_path=ref_model_path)
+
+    @property
+    def ref_model(self):
+        """The frozen reference potential generating the targets."""
+        return self.targets.ref_model
+
+    def _step(self, batch, subset: str):
+        """Shared body of the training, validation and test steps."""
+        pred = self.predict_without_postprocessing(batch)
+
+        # The reference model differentiates the energy twice, so it needs grad
+        # even during validation and testing, where it is switched off globally.
+        with torch.enable_grad():
+            pred, targets = self.targets(batch, pred)
+
+        pred, targets = self.apply_constraints(pred, targets)
+        loss = self.loss_fn(pred, targets)
+
+        on_step = subset == "train"
+        self.log(
+            f"{subset}_loss",
+            loss,
+            on_step=on_step,
+            on_epoch=not on_step,
+            prog_bar=not on_step,
+            batch_size=len(batch[properties.idx]),
+        )
+        self.log_metrics(pred, targets, subset)
+        return loss
 
     def training_step(self, batch, batch_idx):
-        # ref_targets = {"target_forces": batch["forces"]}
-
-        _ = self.predict_without_postprocessing(batch)
-        _ = self.ref_model(batch)
-        targets = {"target_forces": batch["target_forces"].detach()}
-
-        # for k in ref_targets.keys():
-        #    print(torch.max(torch.abs(targets[k] - ref_targets[k])))
-
-        targets["target_damping_factor"] = torch.zeros_like(batch["damping_factor"])
-
-        loss = self.loss_fn(batch, targets)
-
-        self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
-        self.log_metrics(batch, targets, "train")
-        return loss
+        return self._step(batch, "train")
 
     def validation_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
-
-        _ = self.predict_without_postprocessing(batch)
-        with torch.enable_grad():
-            _ = self.ref_model(batch)
-        targets = {
-            "target_forces": batch["target_forces"].detach(),
-            "target_damping_factor": torch.zeros_like(batch["damping_factor"]),
-        }
-
-        loss = self.loss_fn(batch, targets)
-
-        self.log(
-            "val_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            batch_size=len(batch["_idx"]),
-        )
-        self.log_metrics(batch, targets, "val")
-
-        return {"val_loss": loss}
+        return {"val_loss": self._step(batch, "val")}
 
     def test_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
-
-        _ = self.predict_without_postprocessing(batch)
-        with torch.enable_grad():
-            _ = self.ref_model(batch)
-        targets = {
-            "target_forces": batch["target_forces"].detach(),
-            "target_damping_factor": torch.zeros_like(batch["damping_factor"]),
-        }
-        loss = self.loss_fn(batch, targets)
-
-        self.log(
-            "test_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            batch_size=len(batch["_idx"]),
-        )
-        self.log_metrics(batch, targets, "test")
-        return {"test_loss": loss}
+        return {"test_loss": self._step(batch, "test")}
 
 
 class ConsiderOnlySelectedAtoms(nn.Module):

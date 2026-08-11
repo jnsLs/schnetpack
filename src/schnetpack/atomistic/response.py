@@ -7,7 +7,6 @@ from torch.autograd import grad
 
 from schnetpack.nn.utils import derivative_from_molecular, derivative_from_atomic
 import schnetpack.properties as properties
-from schnetpack.units import convert_units
 
 
 __all__ = ["Forces", "Strain", "Response", "Hessian", "HVP"]
@@ -153,31 +152,61 @@ class Hessian(nn.Module):
 
 
 class HVP(nn.Module):
+    """Damped Hessian-vector product of a reference potential.
+
+    Given a trial step :math:`p` and a damping factor :math:`\\lambda`, both
+    predicted by another (student) model and already present in ``inputs``,
+    this computes
+
+    .. math::
+        (H + \\lambda I)\\,p
+        \\qquad\\text{and}\\qquad
+        F = -\\nabla E ,
+
+    i.e. the left-hand side of the damped Newton system and its right-hand
+    side. Training the student to make the two agree teaches it to predict the
+    Newton step :math:`p = -(H + \\lambda I)^{-1}\\nabla E` without ever
+    forming or inverting the Hessian.
+
+    The Hessian enters only through a vector product, so the second derivative
+    costs one extra backward pass rather than :math:`3N` of them.
+
+    Note:
+        This module reads ``newton_step_key`` and ``damping_factor_key`` from
+        ``inputs``, so the model producing them must run *before* this one.
+    """
+
     def __init__(
         self,
         calc_forces: bool = True,
         energy_key: str = properties.energy,
-        force_key: str = "target_forces",
-        hvp_key: str = "forces",
-        prop_vec_key: str = "newton_step_pd",
+        ref_force_key: str = properties.ref_forces,
+        damped_hvp_key: str = properties.damped_hvp,
+        newton_step_key: str = properties.newton_step,
+        damping_factor_key: str = properties.damping_factor,
     ):
         """
         Args:
-            calc_forces: If True, calculate atomic forces.
+            calc_forces: If True, also store the reference forces.
             energy_key: Key of the energy in results.
-            force_key: Key of the forces in results.
-            hessian_key: Key of the hessian in results.
+            ref_force_key: Key under which the reference forces are stored.
+            damped_hvp_key: Key under which the damped Hessian-vector product
+                is stored.
+            newton_step_key: Key of the trial step, read from the inputs.
+            damping_factor_key: Key of the per-molecule damping factor, read
+                from the inputs.
         """
         super(HVP, self).__init__()
         self.calc_forces = calc_forces
         self.energy_key = energy_key
-        self.force_key = force_key
-        self.hvp_key = hvp_key
-        self.prop_vec_key = prop_vec_key
+        self.ref_force_key = ref_force_key
+        self.damped_hvp_key = damped_hvp_key
+        self.newton_step_key = newton_step_key
+        self.damping_factor_key = damping_factor_key
         self.model_outputs = []
         if calc_forces:
-            self.model_outputs.append(force_key)
-        self.model_outputs.append(hvp_key)
+            self.model_outputs.append(ref_force_key)
+        self.model_outputs.append(damped_hvp_key)
 
         self.required_derivatives = []
         self.required_derivatives.append(properties.R)
@@ -198,31 +227,32 @@ class HVP(nn.Module):
         if dEdR is None:
             dEdR = torch.zeros_like(inputs[properties.R])
         if self.calc_forces:
-            inputs[self.force_key] = -dEdR
+            inputs[self.ref_force_key] = -dEdR
 
-        d2EdR2 = grad(
+        # H @ p, obtained as a second backward pass with p as the seed vector.
+        # create_graph must be True in training: it is what lets gradients
+        # reach the model that produced p and lambda. In eval mode there is no
+        # backward pass, so the graph is not needed.
+        Hp = grad(
             dEdR,
             inputs[properties.R],
-            inputs[self.prop_vec_key],
+            inputs[self.newton_step_key],
             create_graph=self.training,
             retain_graph=True,
         )[0]
 
-        energy_conversion = convert_units("Hartree", "kcal/mol")
-        position_conversion = convert_units("Bohr", "Ang")
+        # Expand the per-molecule damping factor over the atoms of that
+        # molecule and their three cartesian components. Written as an explicit
+        # repeat rather than a broadcast over a trailing singleton dimension:
+        # the two agree in the forward pass, but their backward passes reduce
+        # in different orders and so do not agree to the last bit.
+        damping_factor = torch.repeat_interleave(
+            inputs[self.damping_factor_key], inputs[properties.n_atoms] * 3
+        ).reshape(-1, 3)
 
-        damping_factor = inputs[
-            "damping_factor"
-        ]  # * energy_conversion / position_conversion**2
-        # damping_factor = torch.ones_like(damping_factor) * 0.1 * energy_conversion / position_conversion**2
+        damped_part = inputs[self.newton_step_key] * damping_factor
 
-        repeats = inputs["_n_atoms"] * 3
-        damping_factor = torch.repeat_interleave(damping_factor, repeats)
-        damping_factor = damping_factor.reshape(-1, 3)
-
-        damped_part = inputs[self.prop_vec_key] * damping_factor
-
-        inputs[self.hvp_key] = d2EdR2 + damped_part
+        inputs[self.damped_hvp_key] = Hp + damped_part
 
         return inputs
 

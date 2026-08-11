@@ -47,7 +47,6 @@ class HessianDUUT(nn.Module):
         self.model_outputs = [hessian_key]
 
     def forward(self, inputs):
-        atomic_numbers = inputs[properties.Z]
         positions = inputs[properties.R]  # 90 x 3
         l0 = inputs["scalar_representation"]  # 90 x F
         l1 = inputs["vector_representation"]  # 90 x 3 x F
@@ -225,38 +224,25 @@ class DampingFactor(Atomwise):
             )
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        n_mols = inputs["_n_atoms"].shape[0]
+        n_mols = inputs[properties.n_atoms].shape[0]
         if self.fixed_damping_factor:
             self.fixed_damping_factor = self.fixed_damping_factor.to(
-                inputs["_n_atoms"].device
+                inputs[properties.n_atoms].device
             )
             inputs[self.output_key] = self.fixed_damping_factor.repeat(n_mols)
 
         elif self.learnable_damping_factor:
-            damping_factor_processed = torch.exp(self.learnable_damping_factor)
-            inputs[self.output_key] = damping_factor_processed.repeat(n_mols)
+            inputs[self.output_key] = torch.exp(self.learnable_damping_factor).repeat(
+                n_mols
+            )
         else:
-            # predict atomwise contributions
-            y = self.outnet(inputs["scalar_representation"])
+            # predicted per-molecule value, from the usual Atomwise pathway
+            inputs = super().forward(inputs)
 
-            # accumulate the per-atom output if necessary
-            if self.per_atom_output_key is not None:
-                inputs[self.per_atom_output_key] = y
-
-            # aggregate
-            if self.aggregation_mode is not None:
-                idx_m = inputs[properties.idx_m]
-                maxm = int(idx_m[-1]) + 1
-                y = snn.scatter_add(y, idx_m, dim_size=maxm)
-                y = torch.squeeze(y, -1)
-
-                if self.aggregation_mode == "avg":
-                    y = y / inputs[properties.n_atoms]
-
-                if self.aggregation_mode == "positive":
-                    y = abs(y)
-
-            inputs[self.output_key] = y
+            # a damping factor has to be non-negative for (H + lambda I) to
+            # stay positive definite
+            if self.aggregation_mode == "positive":
+                inputs[self.output_key] = abs(inputs[self.output_key])
         return inputs
 
 
@@ -286,14 +272,16 @@ class NewtonStep(nn.Module):
         )
 
     def forward(self, inputs):
-        l0 = inputs["scalar_representation"]  # 90 x 30
-        l1 = inputs["vector_representation"]  # 90 x 3 x 30
+        scalar = inputs["scalar_representation"]
+        vector = inputs["vector_representation"]
 
-        l0, l1 = self.outnet((l0, l1))  # 90 x 1, 90 x 3 x 1
+        # Only the vector output is used as the step. The scalar branch is not
+        # dead weight: build_gated_equivariant_mlp gates the vector output with
+        # it, so its parameters are load-bearing even though its output is not
+        # read here.
+        _, step = self.outnet((scalar, vector))
 
-        l1 = l1.squeeze(-1)  # * l0  # 90 x 3
-
-        inputs[self.newton_step_key] = l1
+        inputs[self.newton_step_key] = step.squeeze(-1)
         return inputs
 
 

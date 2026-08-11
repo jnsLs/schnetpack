@@ -84,12 +84,12 @@ def student_model():
         input_modules=[spk.atomistic.PairwiseDistances()],
         output_modules=[
             spk.atomistic.NewtonStep(
-                newton_step_key="newton_step_pd",
+                newton_step_key=spk.properties.newton_step,
                 n_in=N_ATOM_BASIS,
                 n_hidden=12,
             ),
             spk.atomistic.DampingFactor(
-                output_key="damping_factor",
+                output_key=spk.properties.damping_factor,
                 n_in=N_ATOM_BASIS,
                 aggregation_mode="positive",
             ),
@@ -124,8 +124,8 @@ def surrogate_outputs():
     """The ``ModelOutput`` list mirroring ``newton_step_training_horm_hvp.yaml``."""
     return [
         spk.task.ModelOutput(
-            name="forces",
-            target_property="target_forces",
+            name=spk.properties.damped_hvp,
+            target_property=spk.properties.ref_forces,
             loss_fn=torch.nn.MSELoss(),
             metrics={
                 "mae": torchmetrics.regression.MeanAbsoluteError(),
@@ -134,7 +134,7 @@ def surrogate_outputs():
             loss_weight=1.0,
         ),
         spk.task.ModelOutput(
-            name="damping_factor",
+            name=spk.properties.damping_factor,
             target_property="target_damping_factor",
             loss_fn=torch.nn.MSELoss(),
             metrics={
@@ -144,8 +144,8 @@ def surrogate_outputs():
             loss_weight=0.00001,
         ),
         spk.task.ModelOutput(
-            name="newton_step_pd",
-            target_property="target_forces",
+            name=spk.properties.newton_step,
+            target_property=spk.properties.ref_forces,
             loss_fn=spk.train.loss.DescendingLoss(),
             metrics={
                 "ascent_loss": spk.train.metrics.IsDescendingMetric(clamp_at_zero=True),

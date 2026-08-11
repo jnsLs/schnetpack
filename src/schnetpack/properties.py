@@ -71,7 +71,14 @@ magnetic_field: Final[str] = "magnetic_field"
 nuclear_magnetic_moments: Final[str] = "nuclear_magnetic_moments"
 shielding: Final[str] = "shielding"
 nuclear_spin_coupling: Final[str] = "nuclear_spin_coupling"
+#: Newton step ``p`` predicted by the surrogate model
 newton_step: Final[str] = "newton_step"
+#: per-molecule Levenberg-Marquardt damping factor ``lambda``
+damping_factor: Final[str] = "damping_factor"
+#: forces ``-grad E`` supplied by the frozen reference model
+ref_forces: Final[str] = "ref_forces"
+#: damped Hessian-vector product ``(H + lambda I) p``
+damped_hvp: Final[str] = "damped_hvp"
 
 ## external fields needed for different response properties
 required_external_fields = {

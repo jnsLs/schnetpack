@@ -1,7 +1,21 @@
 # @package _global_
+#
+# Trains a model to predict damped Newton steps.
+#
+# Targets are built on the fly rather than read from the dataset: a frozen
+# reference potential supplies the forces F = -grad E and, through a second
+# backward pass, the damped Hessian-vector product (H + lambda I) p. Driving
+# the two together makes the predicted step p solve the damped Newton system
+# without ever forming or inverting a Hessian. The damping lambda is learned
+# alongside the step, regularised towards zero.
+#
+# The reference model is mandatory and machine-specific, so pass it on the
+# command line:
+#
+#   spktrain experiment=newton_step_training_horm_hvp \
+#       task.ref_model_path=/path/to/runs/<run>/best_model
 
 defaults:
-  - /callbacks@callbacks.grad_norm: grad_norm
   - override /model: nnp
   - override /data: custom
 
@@ -12,7 +26,10 @@ globals:
   lr: 1e-3
   energy_key: energy
   forces_key: forces
-  newtonstep_key: newton_step_pd
+  newton_step_key: newton_step
+  damping_factor_key: damping_factor
+  damped_hvp_key: damped_hvp
+  ref_forces_key: ref_forces
   distance_unit: Ang
   energy_unit: kcal/mol
 
@@ -38,11 +55,11 @@ data:
 model:
   output_modules:
     - _target_: schnetpack.atomistic.NewtonStep
-      newton_step_key: ${globals.newtonstep_key}
+      newton_step_key: ${globals.newton_step_key}
       n_in: ${model.representation.n_atom_basis}
       n_hidden: 60
     - _target_: schnetpack.atomistic.DampingFactor
-      output_key: damping_factor
+      output_key: ${globals.damping_factor_key}
       n_in: ${model.representation.n_atom_basis}
       aggregation_mode: positive
   postprocessors:
@@ -50,15 +67,16 @@ model:
 
 task:
   _target_: schnetpack.task.AtomisticTaskSurrogate
-  ref_model_path: /home/Jonas/hessian/newton_step/training/runs/Ac_Ala3_NHMe_all/best_model
-  optimizer_cls: torch.optim.AdamW                                        
-  optimizer_args:                                                         
-    lr: ${globals.lr}                                                     
-    weight_decay: 0.01  
+  ref_model_path: ???
+  optimizer_cls: torch.optim.AdamW
+  optimizer_args:
+    lr: ${globals.lr}
+    weight_decay: 0.01
   outputs:
+    # the residual of the damped Newton system: (H + lambda I) p should equal F
     - _target_: schnetpack.task.ModelOutput
-      name: ${globals.forces_key}
-      target_property: target_forces
+      name: ${globals.damped_hvp_key}
+      target_property: ${globals.ref_forces_key}
       loss_fn:
         _target_: torch.nn.MSELoss
       metrics:
@@ -67,8 +85,9 @@ task:
         mse:
           _target_: torchmetrics.regression.MeanSquaredError
       loss_weight: 1.00
+    # keep the damping as small as the system allows (target is identically zero)
     - _target_: schnetpack.task.ModelOutput
-      name: damping_factor
+      name: ${globals.damping_factor_key}
       target_property: target_damping_factor
       loss_fn:
         _target_: torch.nn.MSELoss
@@ -78,9 +97,11 @@ task:
         mse:
           _target_: torchmetrics.regression.MeanSquaredError
       loss_weight: 0.00001
+    # not trained on (weight 0), logged to watch whether the predicted step
+    # actually points downhill
     - _target_: schnetpack.task.ModelOutput
-      name: newton_step_pd
-      target_property: target_forces
+      name: ${globals.newton_step_key}
+      target_property: ${globals.ref_forces_key}
       loss_fn:
         _target_: schnetpack.train.loss.DescendingLoss
       metrics:
