@@ -361,7 +361,7 @@ class AtomisticTaskSurrogate(AtomisticTask):
     2. the reference model, which contracts its Hessian with ``p`` to give
        ``(H + lambda I) p`` and supplies the forces ``F = -grad E``.
 
-    The loss drives the two together, which is the residual of the damped
+    The loss drives the two together, minimising the residual of the damped
     Newton system, so the student learns to solve it without ever forming or
     inverting a Hessian.
 

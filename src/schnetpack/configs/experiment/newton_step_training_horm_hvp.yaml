@@ -73,7 +73,7 @@ task:
     lr: ${globals.lr}
     weight_decay: 0.01
   outputs:
-    # the residual of the damped Newton system: (H + lambda I) p should equal F
+    # the damped Newton system, (H + lambda I) p = F; the loss below is its residual
     - _target_: schnetpack.task.ModelOutput
       name: ${globals.damped_hvp_key}
       target_property: ${globals.ref_forces_key}
