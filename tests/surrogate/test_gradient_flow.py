@@ -118,7 +118,9 @@ def test_reference_model_runs_in_train_mode_whatever_the_task_does(
     _augmented(surrogate_task, newton_batch)
 
     assert seen["training"] is True, "reference forces would come back detached"
-    assert reference_model.training is False, "the reference model's mode was not restored"
+    assert (
+        reference_model.training is False
+    ), "the reference model's mode was not restored"
 
 
 def test_validation_step_runs_with_grad_globally_disabled(surrogate_task, newton_batch):

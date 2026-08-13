@@ -60,9 +60,7 @@ def test_reference_model_still_follows_the_task_device(surrogate_task):
     assert all(p.dtype == torch.float64 for p in surrogate_task.ref_model.parameters())
 
 
-def test_checkpoint_round_trips_through_load_from_checkpoint(
-    surrogate_task, tmp_path
-):
+def test_checkpoint_round_trips_through_load_from_checkpoint(surrogate_task, tmp_path):
     """cli.py reloads the best task this way, so it has to keep working."""
     import schnetpack as spk
 
@@ -116,7 +114,9 @@ def test_export_contains_only_the_trained_modules(surrogate_task, tmp_path):
     assert surrogate_task.model.do_postprocessing is True
 
 
-def test_missing_reference_model_fails_loudly(student_model, surrogate_outputs, tmp_path):
+def test_missing_reference_model_fails_loudly(
+    student_model, surrogate_outputs, tmp_path
+):
     """A path that does not resolve must say so, not crash inside torch.load."""
     import schnetpack as spk
 

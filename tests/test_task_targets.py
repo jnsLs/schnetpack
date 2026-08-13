@@ -84,7 +84,9 @@ def test_prediction_targets_are_detached():
         ]
     )
     batch = _batch()
-    targets = task._collect_predicted_targets(task.predict_without_postprocessing(batch))
+    targets = task._collect_predicted_targets(
+        task.predict_without_postprocessing(batch)
+    )
 
     assert targets["energy"].grad_fn is None
 

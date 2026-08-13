@@ -42,7 +42,10 @@ def test_unknown_format_is_rejected(ref_model_path):
 
 
 def test_scripted_reference_reproduces_the_eager_newton_system(
-    student_model, surrogate_outputs, ref_model_path, scripted_ref_model_path,
+    student_model,
+    surrogate_outputs,
+    ref_model_path,
+    scripted_ref_model_path,
     newton_batch,
 ):
     """The whole point of supporting TorchScript: same numbers, other container.
