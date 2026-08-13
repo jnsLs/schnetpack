@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .idea
 *.DS_Store
+CLAUDE.md
 
 docs/tutorials/*.db
 docs/tutorials/*.xyz

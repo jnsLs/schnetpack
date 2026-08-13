@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from schnetpack.units import convert_units
 
 from typing import Dict, List
 

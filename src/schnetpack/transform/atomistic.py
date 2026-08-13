@@ -6,8 +6,6 @@ from ase.data import atomic_masses
 import schnetpack.properties as structure
 from .base import Transform
 from schnetpack.nn import scatter_add
-from schnetpack.units import convert_units
-
 
 __all__ = [
     "SubtractCenterOfMass",
@@ -15,7 +13,6 @@ __all__ = [
     "AddOffsets",
     "RemoveOffsets",
     "ScaleProperty",
-    "HessianDampingSimple",
 ]
 
 
@@ -176,7 +173,7 @@ class ScaleProperty(Transform):
         target_key: str = None,
         output_key: str = None,
         scale_by_mean: bool = False,
-        scale: float = None,
+        scale: torch.Tensor = None,
     ):
         """
         Args:
@@ -200,7 +197,7 @@ class ScaleProperty(Transform):
         else:
             self._initialized = False
 
-        scale = torch.tensor([scale]) or torch.ones((1,))
+        scale = scale or torch.ones((1,))
         self.register_buffer("scale", scale)
 
     def initialize(self, stats) -> None:
@@ -320,51 +317,5 @@ class AddOffsets(Transform):
                 y0 /= inputs[structure.n_atoms]
 
             inputs[self._property] += y0
-
-        return inputs
-
-
-class HessianDampingSimple(Transform):
-    """ """
-
-    is_preprocessor: bool = True
-    is_postprocessor: bool = False
-
-    def __init__(
-        self,
-        hessian_key: str,
-        energy_unit: str = "kcal/mol",
-        position_unit: str = "Ang",
-        damping: float = 0.1,
-    ):
-        super(HessianDampingSimple, self).__init__()
-
-        self.energy_conversion = convert_units("Hartree", energy_unit)
-        self.position_conversion = convert_units("Bohr", position_unit)
-
-        self.hess_key = hessian_key
-        self.damping = damping
-
-    def _apply_damping(self, hessian: torch.Tensor, n_atoms: int) -> torch.Tensor:
-        damping_factor = (
-            self.damping * self.energy_conversion / self.position_conversion**2
-        )
-        hessian += torch.eye(n_atoms * 3, device=hessian.device) * damping_factor
-        return hessian
-
-    def forward(
-        self,
-        inputs: Dict[str, torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-
-        _idx_m_hess = inputs["_idx_m"].repeat_interleave(3)
-        hessians = []
-        for idx_m, n_atoms in enumerate(inputs["_n_atoms"]):
-
-            hessian = inputs[self.hess_key][_idx_m_hess == idx_m]
-            hessian = self._apply_damping(hessian, n_atoms)
-            hessians.append(hessian)
-
-        inputs[self.hess_key] = torch.cat(hessians, dim=0)
 
         return inputs
