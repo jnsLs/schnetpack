@@ -3,17 +3,18 @@
 # Trains a model to predict damped Newton steps.
 #
 # Targets are built on the fly rather than read from the dataset: a frozen
-# reference potential supplies the forces F = -grad E and, through a second
-# backward pass, the damped Hessian-vector product (H + lambda I) p. Driving
-# the two together makes the predicted step p solve the damped Newton system
-# without ever forming or inverting a Hessian. The damping lambda is learned
-# alongside the step, regularised towards zero.
+# reference potential, held by the training task, supplies the forces
+# F = -grad E and, through a second backward pass through them, the damped
+# Hessian-vector product (H + lambda I) p. Driving the two together
+# makes the predicted step p solve the damped Newton system without ever
+# forming or inverting a Hessian. The damping lambda is learned alongside the
+# step, regularised towards zero.
 #
 # The reference model is mandatory and machine-specific, so pass it on the
 # command line:
 #
 #   spktrain experiment=newton_step_training_horm_hvp \
-#       task.ref_model_path=/path/to/runs/<run>/best_model
+#       globals.ref_model_path=/path/to/runs/<run>/best_model
 
 defaults:
   - override /model: nnp
@@ -24,6 +25,7 @@ run.path: runs
 globals:
   cutoff: 5.
   lr: 1e-3
+  ref_model_path: ???
   energy_key: energy
   forces_key: forces
   newton_step_key: newton_step
@@ -35,9 +37,7 @@ globals:
 
 data:
   distance_unit: ${globals.distance_unit}
-  property_units:
-    energy: ${globals.energy_unit}
-    forces: ${globals.energy_unit}/${globals.distance_unit}
+  load_properties: []
   transforms:
     - _target_: schnetpack.transform.CachedNeighborList
       cache_path: ${run.work_dir}/cache
@@ -66,17 +66,25 @@ model:
     - _target_: schnetpack.transform.CastTo64
 
 task:
-  _target_: schnetpack.task.AtomisticTaskSurrogate
-  ref_model_path: ???
+  _target_: schnetpack.train.NewtonSurrogateTask
+  ref_model_path: ${globals.ref_model_path}
+  ref_model_format: auto
+  ref_model_force_key: ${globals.forces_key}
+  newton_step_key: ${globals.newton_step_key}
+  damping_factor_key: ${globals.damping_factor_key}
+  ref_force_key: ${globals.ref_forces_key}
+  damped_hvp_key: ${globals.damped_hvp_key}
   optimizer_cls: torch.optim.AdamW
   optimizer_args:
     lr: ${globals.lr}
     weight_decay: 0.01
   outputs:
-    # the damped Newton system, (H + lambda I) p = F; the loss below is its residual
+    # the damped Newton system, (H + lambda I) p = F; the loss below is its
+    # residual. Both sides are built by the task, hence target_source: prediction.
     - _target_: schnetpack.task.ModelOutput
       name: ${globals.damped_hvp_key}
       target_property: ${globals.ref_forces_key}
+      target_source: prediction
       loss_fn:
         _target_: torch.nn.MSELoss
       metrics:
@@ -85,25 +93,22 @@ task:
         mse:
           _target_: torchmetrics.regression.MeanSquaredError
       loss_weight: 1.00
-    # keep the damping as small as the system allows (target is identically zero)
-    - _target_: schnetpack.task.ModelOutput
+    # keep the damping as small as the system allows; nothing to regress
+    # against, so this is a penalty on the output itself
+    - _target_: schnetpack.task.UnsupervisedModelOutput
       name: ${globals.damping_factor_key}
-      target_property: target_damping_factor
       loss_fn:
-        _target_: torch.nn.MSELoss
+        _target_: schnetpack.train.loss.MeanSquaredMagnitude
       metrics:
-        mae:
-          _target_: torchmetrics.regression.MeanAbsoluteError
-        mse:
-          _target_: torchmetrics.regression.MeanSquaredError
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
       loss_weight: 0.00001
-    # not trained on (weight 0), logged to watch whether the predicted step
-    # actually points downhill
+    # not trained on, logged to watch whether the predicted step actually
+    # points downhill
     - _target_: schnetpack.task.ModelOutput
       name: ${globals.newton_step_key}
       target_property: ${globals.ref_forces_key}
-      loss_fn:
-        _target_: schnetpack.train.loss.DescendingLoss
+      target_source: prediction
       metrics:
         ascent_loss:
           _target_: schnetpack.train.metrics.IsDescendingMetric
@@ -111,4 +116,3 @@ task:
         mean_ascent:
           _target_: schnetpack.train.metrics.IsDescendingMetric
           clamp_at_zero: False
-      loss_weight: 0.0

@@ -23,7 +23,7 @@ def experiment_config(ref_model_path):
             config_name="train",
             overrides=[
                 f"experiment={EXPERIMENT}",
-                f"task.ref_model_path={ref_model_path}",
+                f"globals.ref_model_path={ref_model_path}",
                 "model.representation.n_atom_basis=16",
                 "model.representation.n_interactions=2",
                 "run.work_dir=.",
@@ -38,7 +38,7 @@ def experiment_config(ref_model_path):
 
 @pytest.mark.integration
 def test_experiment_config_composes(experiment_config):
-    assert experiment_config.task._target_ == "schnetpack.task.AtomisticTaskSurrogate"
+    assert experiment_config.task._target_ == "schnetpack.train.NewtonSurrogateTask"
 
 
 @pytest.mark.integration
@@ -63,7 +63,7 @@ def test_ref_model_path_is_mandatory():
     ):
         config = compose(config_name="train", overrides=[f"experiment={EXPERIMENT}"])
     with pytest.raises(MissingMandatoryValue):
-        _ = config.task.ref_model_path
+        _ = config.globals.ref_model_path
 
 
 @pytest.mark.integration
@@ -90,10 +90,11 @@ def test_reference_model_stays_frozen(experiment_config, newton_batch):
     task = instantiate(
         experiment_config.task, model=model, _convert_="partial", _recursive_=True
     )
-    assert all(not p.requires_grad for p in task.ref_model.parameters())
+    ref_model = task.ref_model
+    assert all(not p.requires_grad for p in ref_model.parameters())
 
-    before = [p.detach().clone() for p in task.ref_model.parameters()]
+    before = [p.detach().clone() for p in ref_model.parameters()]
     task.training_step(newton_batch, 0).backward()
-    assert all(p.grad is None for p in task.ref_model.parameters())
-    for old, new in zip(before, task.ref_model.parameters()):
+    assert all(p.grad is None for p in ref_model.parameters())
+    for old, new in zip(before, ref_model.parameters()):
         assert torch.equal(old, new)

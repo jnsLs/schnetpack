@@ -9,11 +9,30 @@ from schnetpack.nn.utils import derivative_from_molecular, derivative_from_atomi
 import schnetpack.properties as properties
 
 
-__all__ = ["Forces", "Strain", "Response", "Hessian", "HVP"]
+__all__ = ["Forces", "Strain", "Response", "Hessian", "HVP", "expand_per_atom"]
 
 
 class ResponseException(Exception):
     pass
+
+
+def expand_per_atom(values: torch.Tensor, n_atoms: torch.Tensor) -> torch.Tensor:
+    """Expand a per-molecule scalar over the atoms of that molecule.
+
+    Written as an explicit repeat to ``(n_atoms_total, 3)`` rather than a
+    broadcast over a trailing singleton dimension: the two agree in the forward
+    pass, but their backward passes reduce in different orders and so do not
+    agree to the last bit.
+
+    Args:
+        values: One scalar per molecule, shape ``(n_molecules,)``.
+        n_atoms: Number of atoms per molecule, shape ``(n_molecules,)``.
+
+    Returns:
+        The values repeated over atoms and cartesian components, shape
+        ``(n_atoms_total, 3)``.
+    """
+    return torch.repeat_interleave(values, n_atoms * 3).reshape(-1, 3)
 
 
 class Forces(nn.Module):
@@ -241,14 +260,9 @@ class HVP(nn.Module):
             retain_graph=True,
         )[0]
 
-        # Expand the per-molecule damping factor over the atoms of that
-        # molecule and their three cartesian components. Written as an explicit
-        # repeat rather than a broadcast over a trailing singleton dimension:
-        # the two agree in the forward pass, but their backward passes reduce
-        # in different orders and so do not agree to the last bit.
-        damping_factor = torch.repeat_interleave(
-            inputs[self.damping_factor_key], inputs[properties.n_atoms] * 3
-        ).reshape(-1, 3)
+        damping_factor = expand_per_atom(
+            inputs[self.damping_factor_key], inputs[properties.n_atoms]
+        )
 
         damped_part = inputs[self.newton_step_key] * damping_factor
 

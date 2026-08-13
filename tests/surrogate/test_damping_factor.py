@@ -89,3 +89,19 @@ def test_positive_matches_abs_of_sum():
         properties.damping_factor
     ]
     torch.testing.assert_close(positive, summed.abs())
+
+
+def test_penalty_matches_the_zero_target_it_replaces():
+    """The damping penalty used to be an MSE against a fabricated zero target.
+
+    ``MeanSquaredMagnitude`` says the same thing without inventing a label, and
+    must keep saying it to the last bit -- the golden regression values were
+    recorded with the old formulation.
+    """
+    torch.manual_seed(5)
+    damping = torch.rand(9).abs()
+
+    penalty = spk.train.MeanSquaredMagnitude()(damping)
+    as_regression = torch.nn.MSELoss()(damping, torch.zeros_like(damping))
+
+    assert torch.equal(penalty, as_regression)

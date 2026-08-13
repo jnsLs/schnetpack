@@ -29,10 +29,10 @@ def main() -> None:
     tmp.mkdir(exist_ok=True)
 
     batch = conftest.newton_batch.__wrapped__()
-    model = conftest.student_model.__wrapped__()
     ref_path = conftest.ref_model_path.__wrapped__(tmp)
+    model = conftest.student_model.__wrapped__()
     outputs = conftest.surrogate_outputs.__wrapped__()
-    task = conftest.surrogate_task.__wrapped__(model, ref_path, outputs)
+    task = conftest.surrogate_task.__wrapped__(model, outputs, ref_path)
 
     golden = collect_golden(task, batch)
 

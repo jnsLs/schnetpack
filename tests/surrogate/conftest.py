@@ -7,13 +7,13 @@ machine. Nothing depends on the real reference checkpoint or on a dataset.
 
 import numpy as np
 import pytest
+import torchmetrics.aggregation
 import torchmetrics.regression
 import torch
 from ase import Atoms
 
 import schnetpack as spk
-import schnetpack.train.loss
-import schnetpack.train.metrics
+import schnetpack.train
 from schnetpack.data.loader import _atoms_collate_fn
 
 CUTOFF = 5.0
@@ -75,9 +75,42 @@ def newton_batch():
     return _atoms_collate_fn(inputs)
 
 
+def _reference_model():
+    """An ordinary energy + forces potential, as any checkpoint would hold.
+
+    Nothing about it is special: the task calls it as-is and reads only its
+    forces.
+    """
+    torch.manual_seed(1)
+    return spk.model.NeuralNetworkPotential(
+        representation=_representation(),
+        input_modules=[spk.atomistic.PairwiseDistances()],
+        output_modules=[
+            spk.atomistic.Atomwise(n_in=N_ATOM_BASIS, output_key="energy"),
+            spk.atomistic.Forces(),
+        ],
+    )
+
+
+@pytest.fixture
+def ref_model_path(tmp_path):
+    """A pickled reference model with the same layout as a real checkpoint."""
+    path = tmp_path / "ref_model"
+    torch.save(_reference_model(), path)
+    return str(path)
+
+
+@pytest.fixture
+def scripted_ref_model_path(tmp_path):
+    """The same reference model, saved as a TorchScript archive."""
+    path = tmp_path / "ref_model_scripted.pt"
+    torch.jit.save(torch.jit.script(_reference_model()), path)
+    return str(path)
+
+
 @pytest.fixture
 def student_model():
-    """The model under training: predicts the Newton step and the damping factor."""
+    """The model under training: it predicts the Newton step and the damping."""
     torch.manual_seed(0)
     return spk.model.NeuralNetworkPotential(
         representation=_representation(),
@@ -99,24 +132,9 @@ def student_model():
 
 
 @pytest.fixture
-def ref_model_path(tmp_path):
-    """A pickled reference model with the same layout as a real checkpoint.
-
-    ``output_modules[1]`` is a :class:`~schnetpack.atomistic.Forces` module,
-    which is what ``AtomisticTaskSurrogate`` replaces with an ``HVP``.
-    """
-    torch.manual_seed(1)
-    ref_model = spk.model.NeuralNetworkPotential(
-        representation=_representation(),
-        input_modules=[spk.atomistic.PairwiseDistances()],
-        output_modules=[
-            spk.atomistic.Atomwise(n_in=N_ATOM_BASIS, output_key="energy"),
-            spk.atomistic.Forces(),
-        ],
-    )
-    path = tmp_path / "ref_model"
-    torch.save(ref_model, path)
-    return str(path)
+def reference_model(surrogate_task):
+    """The frozen reference potential, as it sits on the task."""
+    return surrogate_task.ref_model
 
 
 @pytest.fixture
@@ -126,6 +144,7 @@ def surrogate_outputs():
         spk.task.ModelOutput(
             name=spk.properties.damped_hvp,
             target_property=spk.properties.ref_forces,
+            target_source="prediction",
             loss_fn=torch.nn.MSELoss(),
             metrics={
                 "mae": torchmetrics.regression.MeanAbsoluteError(),
@@ -133,37 +152,30 @@ def surrogate_outputs():
             },
             loss_weight=1.0,
         ),
-        spk.task.ModelOutput(
+        spk.task.UnsupervisedModelOutput(
             name=spk.properties.damping_factor,
-            target_property="target_damping_factor",
-            loss_fn=torch.nn.MSELoss(),
-            metrics={
-                "mae": torchmetrics.regression.MeanAbsoluteError(),
-                "mse": torchmetrics.regression.MeanSquaredError(),
-            },
+            loss_fn=spk.train.MeanSquaredMagnitude(),
+            metrics={"mean": torchmetrics.aggregation.MeanMetric()},
             loss_weight=0.00001,
         ),
         spk.task.ModelOutput(
             name=spk.properties.newton_step,
             target_property=spk.properties.ref_forces,
-            loss_fn=spk.train.loss.DescendingLoss(),
+            target_source="prediction",
             metrics={
-                "ascent_loss": spk.train.metrics.IsDescendingMetric(clamp_at_zero=True),
-                "mean_ascent": spk.train.metrics.IsDescendingMetric(
-                    clamp_at_zero=False
-                ),
+                "ascent_loss": spk.train.IsDescendingMetric(clamp_at_zero=True),
+                "mean_ascent": spk.train.IsDescendingMetric(clamp_at_zero=False),
             },
-            loss_weight=0.0,
         ),
     ]
 
 
 @pytest.fixture
-def surrogate_task(student_model, ref_model_path, surrogate_outputs):
-    return spk.task.AtomisticTaskSurrogate(
+def surrogate_task(student_model, surrogate_outputs, ref_model_path):
+    return spk.train.NewtonSurrogateTask(
         model=student_model,
         outputs=surrogate_outputs,
+        ref_model_path=ref_model_path,
         optimizer_cls=torch.optim.AdamW,
         optimizer_args={"lr": 1e-3, "weight_decay": 0.01},
-        ref_model_path=ref_model_path,
     )

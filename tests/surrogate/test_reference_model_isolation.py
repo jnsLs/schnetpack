@@ -1,10 +1,12 @@
-"""The reference model must not leak into the optimiser or the checkpoints.
+"""The reference model must not leak into the optimiser, the checkpoints or the export.
 
-It is a submodule of the task, so that Lightning moves it to the right device
-along with everything else. That convenience used to come at a price: its
-frozen parameters were handed to the optimiser and a full copy of it was
-written into every checkpoint.
+It belongs to the training procedure, not to the model, so it sits on the task.
+Keeping it there as an *unregistered* attribute is what stops its frozen
+parameters reaching the optimiser and a full second potential being written into
+every checkpoint, while ``_apply`` forwarding keeps it on the task's device.
 """
+
+import pickle
 
 import pytest
 import torch
@@ -14,8 +16,8 @@ def _ref_parameter_ids(task):
     return {id(p) for p in task.ref_model.parameters()}
 
 
-def test_reference_parameters_are_frozen(surrogate_task):
-    assert not any(p.requires_grad for p in surrogate_task.ref_model.parameters())
+def test_reference_parameters_are_frozen(reference_model):
+    assert not any(p.requires_grad for p in reference_model.parameters())
 
 
 def test_reference_parameters_stay_out_of_the_optimizer(surrogate_task):
@@ -28,39 +30,40 @@ def test_reference_parameters_stay_out_of_the_optimizer(surrogate_task):
 
 
 def test_checkpoint_excludes_the_reference_model(surrogate_task):
-    checkpoint = {"state_dict": dict(surrogate_task.state_dict())}
-    surrogate_task.on_save_checkpoint(checkpoint)
+    """No hook needed: an unregistered attribute is never in the state_dict."""
+    state_dict = surrogate_task.state_dict()
 
-    assert not [k for k in checkpoint["state_dict"] if "ref_model" in k]
-    assert [k for k in checkpoint["state_dict"] if k.startswith("model.")]
+    assert not [k for k in state_dict if "ref_model" in k]
+    assert [k for k in state_dict if k.startswith("model.")]
 
 
-def test_checkpoint_can_be_loaded_back(surrogate_task, ref_model_path, tmp_path):
-    """A checkpoint without the reference model must still load."""
-    checkpoint = {"state_dict": dict(surrogate_task.state_dict())}
-    surrogate_task.on_save_checkpoint(checkpoint)
+def test_hyperparameters_carry_the_path_not_the_model(surrogate_task):
+    """The path is a plain string, so hparams stay small and picklable."""
+    assert surrogate_task.hparams["ref_model_path"] == surrogate_task.ref_model_path
+    assert isinstance(surrogate_task.hparams["ref_model_path"], str)
 
-    missing, unexpected = surrogate_task.load_state_dict(
-        checkpoint["state_dict"], strict=False
-    )
-    assert not unexpected
-    assert all("ref_model" in key for key in missing)
+
+def test_pickling_stores_the_reference_model_by_path(surrogate_task):
+    assert "ref_model" not in surrogate_task.__getstate__()
+
+    restored = pickle.loads(pickle.dumps(surrogate_task))
+    assert restored.ref_model is not surrogate_task.ref_model
+    for original, reloaded in zip(
+        surrogate_task.ref_model.parameters(), restored.ref_model.parameters()
+    ):
+        assert torch.equal(original, reloaded)
 
 
 def test_reference_model_still_follows_the_task_device(surrogate_task):
-    """Keeping it a submodule is the point: .to() must still reach it."""
+    """Unregistered means .to() would skip it, so _apply forwards by hand."""
     surrogate_task.to(torch.float64)
     assert all(p.dtype == torch.float64 for p in surrogate_task.ref_model.parameters())
 
 
 def test_checkpoint_round_trips_through_load_from_checkpoint(
-    surrogate_task, newton_batch, tmp_path
+    surrogate_task, tmp_path
 ):
-    """cli.py reloads the best task this way, so it has to keep working.
-
-    Dropping the reference model from the checkpoint would otherwise make the
-    strict load fail on the missing keys.
-    """
+    """cli.py reloads the best task this way, so it has to keep working."""
     import schnetpack as spk
 
     checkpoint_path = tmp_path / "best.ckpt"
@@ -78,7 +81,7 @@ def test_checkpoint_round_trips_through_load_from_checkpoint(
     surrogate_task.on_save_checkpoint(checkpoint)
     torch.save(checkpoint, checkpoint_path)
 
-    reloaded = spk.task.AtomisticTaskSurrogate.load_from_checkpoint(
+    reloaded = spk.train.NewtonSurrogateTask.load_from_checkpoint(
         checkpoint_path, weights_only=False
     )
 
@@ -92,18 +95,37 @@ def test_checkpoint_round_trips_through_load_from_checkpoint(
         assert torch.equal(original, restored)
 
 
-def test_missing_reference_model_fails_loudly(
-    tmp_path, student_model, surrogate_outputs
-):
+def test_export_contains_only_the_trained_modules(surrogate_task, tmp_path):
+    """The exported model never held the reference potential in the first place."""
+    import schnetpack as spk
+    from schnetpack import properties
+
+    path = tmp_path / "best_model"
+    surrogate_task.save_model(str(path), do_postprocessing=True)
+    exported = torch.load(path, weights_only=False)
+
+    assert [type(m).__name__ for m in exported.output_modules] == [
+        "NewtonStep",
+        "DampingFactor",
+    ]
+    assert properties.damped_hvp not in exported.model_outputs
+    assert properties.newton_step in exported.model_outputs
+    assert properties.damping_factor in exported.model_outputs
+
+    # the live task is left exactly as it was
+    assert surrogate_task.model.do_postprocessing is True
+
+
+def test_missing_reference_model_fails_loudly(student_model, surrogate_outputs, tmp_path):
     """A path that does not resolve must say so, not crash inside torch.load."""
     import schnetpack as spk
 
     with pytest.raises(FileNotFoundError, match="no reference model"):
-        spk.task.AtomisticTaskSurrogate(
+        spk.train.NewtonSurrogateTask(
             model=student_model,
             outputs=surrogate_outputs,
-            optimizer_args={"lr": 1e-3},
             ref_model_path=str(tmp_path / "does_not_exist"),
+            optimizer_args={"lr": 1e-3},
         )
 
 
@@ -111,9 +133,9 @@ def test_unset_reference_model_fails_loudly(student_model, surrogate_outputs):
     import schnetpack as spk
 
     with pytest.raises(ValueError, match="ref_model_path"):
-        spk.task.AtomisticTaskSurrogate(
+        spk.train.NewtonSurrogateTask(
             model=student_model,
             outputs=surrogate_outputs,
-            optimizer_args={"lr": 1e-3},
             ref_model_path=None,
+            optimizer_args={"lr": 1e-3},
         )

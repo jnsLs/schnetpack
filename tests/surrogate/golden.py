@@ -15,15 +15,12 @@ from schnetpack import properties
 
 #: semantic name -> the key the pipeline actually uses.
 KEYS = {
-    # student predictions
+    # predictions of the trained modules
     "newton_step": properties.newton_step,
     "damping_factor": properties.damping_factor,
-    # reference-model outputs
+    # outputs of the frozen reference potential
     "ref_forces": properties.ref_forces,  # F = -grad E
     "damped_hvp": properties.damped_hvp,  # (H + lambda I) p
-    # regression targets built by the task
-    "target_ref_forces": properties.ref_forces,
-    "target_damping_factor": "target_damping_factor",
 }
 
 #: concrete ModelOutput name -> stable label used in the golden file, so that
@@ -44,34 +41,32 @@ def collect_golden(task, batch) -> Dict[str, torch.Tensor]:
     task.train()
     torch.set_grad_enabled(True)
 
-    # ---- forward passes -------------------------------------------------
+    # ---- forward pass ---------------------------------------------------
+    # One pass now covers both models: the reference potential is an output
+    # module of the model under training.
+    targets = task._collect_targets(batch)
     pred = task.predict_without_postprocessing(batch)
-    golden["newton_step"] = pred[KEYS["newton_step"]].detach().clone()
-    golden["damping_factor"] = pred[KEYS["damping_factor"]].detach().clone()
+    pred = task.augment_predictions(batch, pred)
+    for name, key in KEYS.items():
+        golden[name] = pred[key].detach().clone()
 
-    _ = task.ref_model(batch)
-    golden["ref_forces"] = batch[KEYS["ref_forces"]].detach().clone()
-    golden["damped_hvp"] = batch[KEYS["damped_hvp"]].detach().clone()
-
-    targets = {
-        KEYS["target_ref_forces"]: batch[KEYS["ref_forces"]].detach(),
-        KEYS["target_damping_factor"]: torch.zeros_like(batch[KEYS["damping_factor"]]),
-    }
+    targets.update(task._collect_predicted_targets(pred))
 
     # ---- per-output losses and the composite loss -----------------------
     for output in task.outputs:
-        contribution = output.calculate_loss(batch, targets)
+        contribution = output.calculate_loss(pred, targets)
         golden[f"loss/{OUTPUT_LABELS[output.name]}"] = (
             torch.as_tensor(contribution).detach().clone()
         )
-    loss = task.loss_fn(batch, targets)
+    loss = task.loss_fn(pred, targets)
     golden["loss/total"] = loss.detach().clone()
 
     # ---- metrics --------------------------------------------------------
     for output in task.outputs:
-        for name, metric in output.metrics["train"].items():
+        for metric in output.metrics["train"].values():
             metric.reset()
-            metric(batch[output.name], targets[output.target_property])
+        output.update_metrics(pred, targets, "train")
+        for name, metric in output.metrics["train"].items():
             golden[f"metric/{OUTPUT_LABELS[output.name]}/{name}"] = (
                 metric.compute().detach().clone()
             )
@@ -99,15 +94,11 @@ def _optimise(task, batch) -> Dict[str, torch.Tensor]:
 
     for step in range(N_OPTIM_STEPS):
         optimizer.zero_grad(set_to_none=True)
+        targets = task._collect_targets(batch)
         pred = task.predict_without_postprocessing(batch)
-        _ = task.ref_model(batch)
-        targets = {
-            KEYS["target_ref_forces"]: batch[KEYS["ref_forces"]].detach(),
-            KEYS["target_damping_factor"]: torch.zeros_like(
-                batch[KEYS["damping_factor"]]
-            ),
-        }
-        loss = task.loss_fn(batch, targets)
+        pred = task.augment_predictions(batch, pred)
+        targets.update(task._collect_predicted_targets(pred))
+        loss = task.loss_fn(pred, targets)
         loss.backward()
         optimizer.step()
         out[f"optim/step{step}/loss"] = loss.detach().clone()

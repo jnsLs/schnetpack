@@ -1,8 +1,8 @@
 """Direct tests for the descent loss and metric.
 
-``DescendingLoss`` is configured with ``loss_weight: 0.0`` in the experiment, so
-``ModelOutput.calculate_loss`` short-circuits before ever calling it and the
-golden regression file cannot pin it. These tests do.
+``DescendingLoss`` is not configured in the experiment at all -- the descent
+of the predicted step is only logged, through ``IsDescendingMetric`` -- so the
+golden regression file cannot pin either of them. These tests do.
 """
 
 import math

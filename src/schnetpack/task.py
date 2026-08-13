@@ -8,15 +8,17 @@ from torchmetrics import Metric
 
 from schnetpack import properties
 from schnetpack.model.base import AtomisticModel
-from schnetpack.train.surrogate import NewtonStepTargets
 
 
 __all__ = [
     "ModelOutput",
+    "UnsupervisedModelOutput",
     "AtomisticTask",
-    "ModelOutputWeighted",
-    "AtomisticTaskSurrogate",
 ]
+
+#: Where a :class:`ModelOutput` takes its target from: an entry of the batch,
+#: as in ordinary supervised training, or another output of the model itself.
+TARGET_SOURCES = ("batch", "prediction")
 
 
 class ModelOutput(nn.Module):
@@ -33,6 +35,7 @@ class ModelOutput(nn.Module):
         metrics: Optional[Dict[str, Metric]] = None,
         constraints: Optional[List[torch.nn.Module]] = None,
         target_property: Optional[str] = None,
+        target_source: str = "batch",
     ):
         r"""
         Args:
@@ -48,10 +51,22 @@ class ModelOutput(nn.Module):
                 that do not affect the model output but only change the loss value. For example, constraints can be used
                 to neglect or weight some atomic forces in the loss function. This may be useful when training on
                 systems, where only some forces are crucial for its dynamics.
+            target_source: where ``target_property`` is read from. ``"batch"``
+                is the usual supervised case, a label from the dataset.
+                ``"prediction"`` reads it from the model outputs instead, for
+                targets the model computes itself -- the reference forces of
+                the Newton-step surrogate, for example. Such a target is
+                detached: it supervises the output, it is not trained by it.
         """
         super().__init__()
+        if target_source not in TARGET_SOURCES:
+            raise ValueError(
+                f"unknown target_source {target_source!r}, expected one of "
+                f"{TARGET_SOURCES}"
+            )
         self.name = name
         self.target_property = target_property or name
+        self.target_source = target_source
         self.loss_fn = loss_fn
         self.loss_weight = loss_weight
         self.train_metrics = nn.ModuleDict(metrics)
@@ -76,40 +91,6 @@ class ModelOutput(nn.Module):
     def update_metrics(self, pred, target, subset):
         for metric in self.metrics[subset].values():
             metric(pred[self.name], target[self.target_property])
-
-
-class ModelOutputWeighted(ModelOutput):
-    def __init__(
-        self,
-        name: str,
-        loss_fn: Optional[nn.Module] = None,
-        loss_weight: float = 1.0,
-        metrics: Optional[Dict[str, Metric]] = None,
-        constraints: Optional[List[torch.nn.Module]] = None,
-        target_property: Optional[str] = None,
-        weight_property: Optional[str] = None,
-    ):
-        super().__init__(
-            name,
-            loss_fn,
-            loss_weight,
-            metrics,
-            constraints,
-            target_property,
-        )
-        self.weight_property = weight_property
-
-    def calculate_loss(self, pred, target):
-        if self.loss_weight == 0 or self.loss_fn is None:
-            return 0.0
-
-        loss = self.loss_weight * self.loss_fn(
-            pred[self.name],
-            target[self.target_property],
-            target[self.weight_property],
-            target["_idx_m"],
-        )
-        return loss
 
 
 class UnsupervisedModelOutput(ModelOutput):
@@ -205,77 +186,90 @@ class AtomisticTask(pl.LightningModule):
                 pred, targets = constraint(pred, targets, output)
         return pred, targets
 
-    #: Extra entries some losses and constraints need alongside the regression
+    #: Bookkeeping some losses and constraints need alongside the regression
     #: targets. Not every batch carries them, so they are passed on when present.
-    optional_target_keys = ("considered_atoms", "inv_hessian", properties.idx_m)
+    optional_target_keys = (properties.idx_m,)
 
     def _collect_targets(self, batch):
-        """Gather the regression targets for all supervised outputs."""
-        targets = {
-            output.target_property: batch[output.target_property]
-            for output in self.outputs
-            if not isinstance(output, UnsupervisedModelOutput)
-        }
-        for key in self.optional_target_keys:
+        """Gather the labelled targets, plus the bookkeeping that travels with them.
+
+        Must run *before* the model does: output modules write their
+        predictions into the batch, overwriting any label that happens to share
+        a name with them -- which is the normal case for energies and forces.
+        """
+        targets = {}
+        for output in self.outputs:
+            if isinstance(output, UnsupervisedModelOutput):
+                continue
+            if output.target_source == "batch":
+                targets[output.target_property] = batch[output.target_property]
+
+        keys = set(self.optional_target_keys)
+        for output in self.outputs:
+            for constraint in output.constraints:
+                keys.update(getattr(constraint, "required_target_keys", ()))
+        for key in keys:
             if key in batch:
                 targets[key] = batch[key]
         return targets
 
-    def training_step(self, batch, batch_idx):
+    def _collect_predicted_targets(self, pred):
+        """Gather the targets the model supervises itself with.
 
+        Detached: such a target supervises an output, it is not trained by it.
+        """
+        return {
+            output.target_property: pred[output.target_property].detach()
+            for output in self.outputs
+            if not isinstance(output, UnsupervisedModelOutput)
+            and output.target_source == "prediction"
+        }
+
+    def augment_predictions(self, batch, pred):
+        """Hook for adding derived quantities to the predictions.
+
+        Runs between the forward pass and target collection, so whatever it
+        adds can be used as a prediction or, with
+        ``target_source="prediction"``, as a target. The base task adds
+        nothing; see :class:`schnetpack.train.NewtonSurrogateTask` for a task
+        that builds its targets here.
+        """
+        return pred
+
+    def _step(self, batch, subset: str):
+        """Shared body of the training, validation and test steps."""
         targets = self._collect_targets(batch)
-
         pred = self.predict_without_postprocessing(batch)
+        pred = self.augment_predictions(batch, pred)
+        targets.update(self._collect_predicted_targets(pred))
         pred, targets = self.apply_constraints(pred, targets)
 
         loss = self.loss_fn(pred, targets)
 
-        self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
-        self.log_metrics(pred, targets, "train")
+        on_step = subset == "train"
+        self.log(
+            f"{subset}_loss",
+            loss,
+            on_step=on_step,
+            on_epoch=not on_step,
+            prog_bar=not on_step,
+            batch_size=len(batch[properties.idx]),
+        )
+        self.log_metrics(pred, targets, subset)
         return loss
 
+    def training_step(self, batch, batch_idx):
+        return self._step(batch, "train")
+
     def validation_step(self, batch, batch_idx):
+        # Lightning disables gradients for validation and testing; models with
+        # response properties differentiate their own output and need them back.
         torch.set_grad_enabled(self.grad_enabled)
-
-        targets = self._collect_targets(batch)
-
-        pred = self.predict_without_postprocessing(batch)
-        pred, targets = self.apply_constraints(pred, targets)
-
-        loss = self.loss_fn(pred, targets)
-
-        self.log(
-            "val_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            batch_size=len(batch["_idx"]),
-        )
-        self.log_metrics(pred, targets, "val")
-
-        return {"val_loss": loss}
+        return {"val_loss": self._step(batch, "val")}
 
     def test_step(self, batch, batch_idx):
         torch.set_grad_enabled(self.grad_enabled)
-
-        targets = self._collect_targets(batch)
-
-        pred = self.predict_without_postprocessing(batch)
-        pred, targets = self.apply_constraints(pred, targets)
-
-        loss = self.loss_fn(pred, targets)
-
-        self.log(
-            "test_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            batch_size=len(batch["_idx"]),
-        )
-        self.log_metrics(pred, targets, "test")
-        return {"test_loss": loss}
+        return {"test_loss": self._step(batch, "test")}
 
     def predict_without_postprocessing(self, batch):
         pp = self.model.do_postprocessing
@@ -286,8 +280,7 @@ class AtomisticTask(pl.LightningModule):
 
     def configure_optimizers(self):
         # Frozen parameters are skipped rather than handed over with grad None:
-        # a task may hold whole submodules it never trains, such as the
-        # reference potential in AtomisticTaskSurrogate.
+        # a model may hold whole submodules it never trains.
         optimizer = self.optimizer_cls(
             params=(p for p in self.parameters() if p.requires_grad),
             **self.optimizer_kwargs,
@@ -344,140 +337,10 @@ class AtomisticTask(pl.LightningModule):
             pp_status = self.model.do_postprocessing
             if do_postprocessing is not None:
                 self.model.do_postprocessing = do_postprocessing
+
             torch.save(self.model, path)
+
             self.model.do_postprocessing = pp_status
-
-
-class AtomisticTaskSurrogate(AtomisticTask):
-    """Trains a model to predict Newton steps against on-the-fly targets.
-
-    Unlike :class:`AtomisticTask`, the regression targets are not read from the
-    batch but generated during the step by a frozen reference potential (see
-    :mod:`schnetpack.train.surrogate`). Each step therefore runs two models in a
-    fixed order:
-
-    1. the student, predicting a trial step ``p`` and a damping factor
-       ``lambda``;
-    2. the reference model, which contracts its Hessian with ``p`` to give
-       ``(H + lambda I) p`` and supplies the forces ``F = -grad E``.
-
-    The loss drives the two together, minimising the residual of the damped
-    Newton system, so the student learns to solve it without ever forming or
-    inverting a Hessian.
-
-    Note:
-        The order matters and cannot be swapped: the reference model reads the
-        student's predictions out of the batch.
-    """
-
-    def __init__(
-        self,
-        model: AtomisticModel,
-        outputs: List[ModelOutput],
-        optimizer_cls: Type[torch.optim.Optimizer] = torch.optim.Adam,
-        optimizer_args: Optional[Dict[str, Any]] = None,
-        scheduler_cls: Optional[Type] = None,
-        scheduler_args: Optional[Dict[str, Any]] = None,
-        scheduler_monitor: Optional[str] = None,
-        warmup_steps: int = 0,
-        ref_model_path: str = None,
-    ):
-        """
-        Args:
-            model: the neural network model
-            outputs: list of outputs an optional loss functions
-            optimizer_cls: type of torch optimizer,e.g. torch.optim.Adam
-            optimizer_args: dict of optimizer keyword arguments
-            scheduler_cls: type of torch learning rate scheduler
-            scheduler_args: dict of scheduler keyword arguments
-            scheduler_monitor: name of metric to be observed for ReduceLROnPlateau
-            warmup_steps: number of steps used to increase the learning rate from zero
-              linearly to the target learning rate at the beginning of training
-            ref_model_path: path to the frozen reference potential used to build
-              the Newton-step targets. Required.
-        """
-        super().__init__(
-            model=model,
-            outputs=outputs,
-            optimizer_cls=optimizer_cls,
-            optimizer_args=optimizer_args,
-            scheduler_cls=scheduler_cls,
-            scheduler_args=scheduler_args,
-            scheduler_monitor=scheduler_monitor,
-            warmup_steps=warmup_steps,
-        )
-        self.targets = NewtonStepTargets(ref_model_path=ref_model_path)
-
-    #: state_dict prefix of the reference model, excluded from checkpoints
-    _ref_model_prefix = "targets.ref_model."
-
-    @property
-    def ref_model(self):
-        """The frozen reference potential generating the targets."""
-        return self.targets.ref_model
-
-    def on_save_checkpoint(self, checkpoint):
-        """Drop the reference model from the checkpoint.
-
-        It is a submodule so that Lightning moves it to the right device, but
-        it never changes during training, and writing a second full potential
-        into every checkpoint is both wasteful and misleading. It is restored
-        from ``ref_model_path`` when the task is rebuilt.
-        """
-        super().on_save_checkpoint(checkpoint)
-        state_dict = checkpoint.get("state_dict")
-        if state_dict is not None:
-            for key in [k for k in state_dict if k.startswith(self._ref_model_prefix)]:
-                del state_dict[key]
-
-    def on_load_checkpoint(self, checkpoint):
-        """Put the reference model back, so strict loading still succeeds.
-
-        ``__init__`` has already rebuilt it from ``ref_model_path`` by the time
-        this runs, so its weights are taken from there rather than from the
-        checkpoint, which no longer carries them.
-        """
-        super().on_load_checkpoint(checkpoint)
-        state_dict = checkpoint.get("state_dict")
-        if state_dict is not None:
-            for key, value in self.state_dict().items():
-                if key.startswith(self._ref_model_prefix):
-                    state_dict.setdefault(key, value)
-
-    def _step(self, batch, subset: str):
-        """Shared body of the training, validation and test steps."""
-        pred = self.predict_without_postprocessing(batch)
-
-        # The reference model differentiates the energy twice, so it needs grad
-        # even during validation and testing, where it is switched off globally.
-        with torch.enable_grad():
-            pred, targets = self.targets(batch, pred)
-
-        pred, targets = self.apply_constraints(pred, targets)
-        loss = self.loss_fn(pred, targets)
-
-        on_step = subset == "train"
-        self.log(
-            f"{subset}_loss",
-            loss,
-            on_step=on_step,
-            on_epoch=not on_step,
-            prog_bar=not on_step,
-            batch_size=len(batch[properties.idx]),
-        )
-        self.log_metrics(pred, targets, subset)
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        return self._step(batch, "train")
-
-    def validation_step(self, batch, batch_idx):
-        torch.set_grad_enabled(self.grad_enabled)
-        return {"val_loss": self._step(batch, "val")}
-
-    def test_step(self, batch, batch_idx):
-        torch.set_grad_enabled(self.grad_enabled)
-        return {"test_loss": self._step(batch, "test")}
 
 
 class ConsiderOnlySelectedAtoms(nn.Module):
@@ -495,6 +358,11 @@ class ConsiderOnlySelectedAtoms(nn.Module):
         """
         super().__init__()
         self.selection_name = selection_name
+
+    @property
+    def required_target_keys(self):
+        """Batch entries this constraint needs passed on alongside the targets."""
+        return [self.selection_name]
 
     def forward(self, pred, targets, output_module):
         """
