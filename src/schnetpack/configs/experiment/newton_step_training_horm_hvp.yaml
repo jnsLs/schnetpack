@@ -20,8 +20,6 @@ defaults:
   - override /model: nnp
   - override /data: custom
 
-run.path: runs
-
 globals:
   cutoff: 5.
   lr: 1e-3
@@ -36,21 +34,24 @@ globals:
   energy_unit: kcal/mol
 
 data:
-  distance_unit: ${globals.distance_unit}
-  load_properties: []
-  transforms:
-    - _target_: schnetpack.transform.CachedNeighborList
-      cache_path: ${run.work_dir}/cache
-      cache_workdir: ${tmpdir:}/cache
-      keep_cache: False
-      neighbor_list:
-        _target_: schnetpack.transform.MatScipyNeighborList
+  dataset:
+    distance_unit: ${globals.distance_unit}
+    # targets are generated on the fly from the reference model, so nothing
+    # has to be read off the database
+    load_properties: []
+    transforms:
+      - _target_: schnetpack.transform.CachedNeighborList
+        cache_path: ${run.work_dir}/cache
+        cache_workdir: ${tmpdir:}/cache
+        keep_cache: False
+        neighbor_list:
+          _target_: schnetpack.transform.MatScipyNeighborList
+          cutoff: ${globals.cutoff}
+      - _target_: schnetpack.transform.CastTo32
+    test_transforms:
+      - _target_: schnetpack.transform.MatScipyNeighborList
         cutoff: ${globals.cutoff}
-    - _target_: schnetpack.transform.CastTo32
-  test_transforms:
-    - _target_: schnetpack.transform.MatScipyNeighborList
-      cutoff: ${globals.cutoff}
-    - _target_: schnetpack.transform.CastTo32
+      - _target_: schnetpack.transform.CastTo32
 
 model:
   output_modules:
