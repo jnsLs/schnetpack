@@ -1,43 +1,31 @@
 #!/usr/bin/env python3
-import torch
-import torch.nn as nn
-from schnetpack.transform import CastTo64, CastTo32, AddOffsets
+
+#   spkdeploy /path/to/runs/<run>/best_model /path/to/ref_scripted.pt \
+#       --target surrogate
+
+
 import argparse
 
+from schnetpack.deploy import (
+    DEFAULT_CHECK_CUTOFF,
+    export_for_lammps,
+    export_for_surrogate,
+)
+from schnetpack.utils import load_model
 
-# This script is supposed to take a pytorch model and save a just in time compiled version of it.
-# This is needed to run the model with LAMMPS.
-# For further info see examples/howtos/lammps.rst
-
-# Note that this script is designed for models that predict atomic forces via automatic differentiation (utilizing response modules).
-# Hence this script will not work for models without response modules.
-
-
-def get_jit_model(model):
-    # fix invalid operations in postprocessing
-    jit_postprocessors = nn.ModuleList()
-    for postprocessor in model.postprocessors:
-        # ignore type casting
-        if type(postprocessor) in [CastTo64, CastTo32]:
-            continue
-        # ensure offset mean is float
-        if type(postprocessor) == AddOffsets:
-            postprocessor.mean = postprocessor.mean.float()
-
-        jit_postprocessors.append(postprocessor)
-    model.postprocessors = jit_postprocessors
-
-    return torch.jit.script(model)
-
-
-def save_jit_model(model, model_path):
-    jit_model = get_jit_model(model)
-
-    # add metadata
-    metadata = dict()
-    metadata["cutoff"] = str(jit_model.representation.cutoff.item()).encode("ascii")
-
-    torch.jit.save(jit_model, model_path, _extra_files=metadata)
+# This script takes a pytorch model and saves a just in time compiled version of it.
+#
+# Two export targets are supported:
+#
+#   --target lammps    (default) for running the model with LAMMPS.
+#                      For further info see examples/howtos/lammps.rst
+#   --target surrogate for use as the frozen reference potential of the
+#                      Newton-step surrogate training, see
+#                      experiment=newton_step_training_horm_hvp
+#
+# Note that both targets are designed for models that predict atomic forces via
+# automatic differentiation (utilizing response modules). Hence this script will
+# not work for models without response modules.
 
 
 if __name__ == "__main__":
@@ -46,9 +34,44 @@ if __name__ == "__main__":
     parser.add_argument("model_path")
     parser.add_argument("deployed_model_path")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument(
+        "--target",
+        choices=["lammps", "surrogate"],
+        default="lammps",
+        help="what the compiled model is exported for (default: lammps)",
+    )
+    parser.add_argument(
+        "--force-key",
+        type=str,
+        default="forces",
+        help="key of the forces in the model output (--target surrogate)",
+    )
+    parser.add_argument(
+        "--no-check",
+        action="store_true",
+        help="skip the differentiability check of the exported model "
+        "(--target surrogate)",
+    )
+    parser.add_argument(
+        "--check-cutoff",
+        type=float,
+        default=None,
+        help="cutoff of the neighbor list used for the differentiability check. "
+        f"Defaults to the model's cutoff, or {DEFAULT_CHECK_CUTOFF} if it has none.",
+    )
     args = parser.parse_args()
 
-    model = torch.load(args.model_path, map_location=args.device, weights_only=False)
-    save_jit_model(model, args.deployed_model_path)
+    model = load_model(args.model_path, device=args.device)
+
+    if args.target == "surrogate":
+        export_for_surrogate(
+            model,
+            args.deployed_model_path,
+            force_key=args.force_key,
+            check=not args.no_check,
+            check_cutoff=args.check_cutoff,
+        )
+    else:
+        export_for_lammps(model, args.deployed_model_path)
 
     print(f"stored deployed model at {args.deployed_model_path}.")

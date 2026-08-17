@@ -15,6 +15,13 @@
 #
 #   spktrain experiment=newton_step_training_horm_hvp \
 #       globals.ref_model_path=/path/to/runs/<run>/best_model
+#
+# A TorchScript archive works just as well, and loads without the schnetpack
+# classes it was built from having to be importable.
+#
+#   spktrain experiment=newton_step_training_horm_hvp \
+#       globals.ref_model_path=/path/to/ref_scripted.pt \
+#       globals.ref_model_format=torchscript
 
 defaults:
   - override /model: nnp
@@ -24,6 +31,8 @@ globals:
   cutoff: 5.
   lr: 1e-3
   ref_model_path: ???
+  # auto, torch or torchscript
+  ref_model_format: auto
   energy_key: energy
   forces_key: forces
   newton_step_key: newton_step
@@ -69,7 +78,7 @@ model:
 task:
   _target_: schnetpack.train.NewtonSurrogateTask
   ref_model_path: ${globals.ref_model_path}
-  ref_model_format: auto
+  ref_model_format: ${globals.ref_model_format}
   ref_model_force_key: ${globals.forces_key}
   newton_step_key: ${globals.newton_step_key}
   damping_factor_key: ${globals.damping_factor_key}
