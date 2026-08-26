@@ -150,7 +150,12 @@ def _split_qkvv(QKVV, num_heads, src, dst):
     E, S = QKVV.shape
     D = S // 4
     d_head = D // num_heads
-    Q, K, V1, V2 = QKVV[:, :D], QKVV[:, D : 2 * D], QKVV[:, 2 * D : 3 * D], QKVV[:, 3 * D :]
+    Q, K, V1, V2 = (
+        QKVV[:, :D],
+        QKVV[:, D : 2 * D],
+        QKVV[:, 2 * D : 3 * D],
+        QKVV[:, 3 * D :],
+    )
     q = Q[dst].view(-1, num_heads, d_head)
     k = K[src].view(-1, num_heads, d_head)
     v1 = V1[dst].view(-1, num_heads, d_head)
@@ -196,7 +201,9 @@ def triplet_attention_softmax(
         attn = attn * env_gate.unsqueeze(-1)
 
     weighted = (attn.unsqueeze(-1) * v1 * v2).reshape(-1, D)
-    return torch.zeros(E, D, device=QKVV.device, dtype=QKVV.dtype).index_add(0, dst, weighted)
+    return torch.zeros(E, D, device=QKVV.device, dtype=QKVV.dtype).index_add(
+        0, dst, weighted
+    )
 
 
 def triplet_attention_sigmoid(
@@ -227,10 +234,16 @@ def triplet_attention_sigmoid(
     q, k, v1, v2, E, D, d_head = _split_qkvv(QKVV, num_heads, src, dst)
 
     scores = (q * k).sum(-1) / math.sqrt(d_head) + bias  # (T, H)
-    weight = torch.sigmoid(scores) * env_pair.unsqueeze(-1) * inv_sqrt_K_eff[dst].unsqueeze(-1)
+    weight = (
+        torch.sigmoid(scores)
+        * env_pair.unsqueeze(-1)
+        * inv_sqrt_K_eff[dst].unsqueeze(-1)
+    )
 
     weighted = (weight.unsqueeze(-1) * v1 * v2).reshape(-1, D)
-    return torch.zeros(E, D, device=QKVV.device, dtype=QKVV.dtype).index_add(0, dst, weighted)
+    return torch.zeros(E, D, device=QKVV.device, dtype=QKVV.dtype).index_add(
+        0, dst, weighted
+    )
 
 
 def _encoder_forward(self, inputs):
@@ -326,7 +339,9 @@ def _encoder_forward(self, inputs):
             pooled = torch.zeros(
                 n_mols, per_atom.shape[-1], device=h.device, dtype=h.dtype
             )
-            pooled = pooled.scatter_add(0, mol_idx.unsqueeze(-1).expand_as(gated), gated)
+            pooled = pooled.scatter_add(
+                0, mol_idx.unsqueeze(-1).expand_as(gated), gated
+            )
             if pooled.shape[-1] == 1:
                 pooled = pooled.squeeze(-1)
             out[target] = pooled
@@ -396,7 +411,9 @@ def _build_batch_graph(
 
     i_np = i_idx.detach().cpu().numpy().astype(np.int32)
     j_np = j_idx.detach().cpu().numpy().astype(np.int32)
-    flat_dst_np, flat_src_np, offsets_np, _ = _triplet_blocks_numba(i_np, j_np, n_atoms_total)
+    flat_dst_np, flat_src_np, offsets_np, _ = _triplet_blocks_numba(
+        i_np, j_np, n_atoms_total
+    )
 
     device = positions.device
     flat_dst = torch.from_numpy(flat_dst_np).to(device)
@@ -474,7 +491,9 @@ class MDETTeacher(nn.Module):
         # batch positions -> native, native energy/forces -> batch units
         self.pos_scale = convert_units(position_unit, native_length_unit)
         self.energy_scale = convert_units(native_energy_unit, energy_unit)
-        self.force_scale = self.energy_scale / convert_units(native_length_unit, position_unit)
+        self.force_scale = self.energy_scale / convert_units(
+            native_length_unit, position_unit
+        )
 
         self.self_loops = bool(getattr(model, "self_loops", False))
         self.dst_keyed = bool(getattr(model, "sigmoid_attn", False))
@@ -504,7 +523,11 @@ class MDETTeacher(nn.Module):
                 inputs, properties.total_charge, self.charge, n_mols, positions.device
             ),
             Props.multiplicity: self._mol_input(
-                inputs, properties.spin_multiplicity, self.multiplicity, n_mols, positions.device
+                inputs,
+                properties.spin_multiplicity,
+                self.multiplicity,
+                n_mols,
+                positions.device,
             ),
             Props.mol_idx: idx_m.long(),
             Props.n_atoms: n_atoms.long(),
@@ -616,8 +639,7 @@ def save_mdet_teacher(teacher: MDETTeacher, path: str) -> None:
 def check_teacher(
     teacher: MDETTeacher,
     batch: Dict[str, torch.Tensor],
-    rtol: float = 1e-4,
-    atol: float = 1e-5,
+    eps: float = 1e-3,
 ) -> Dict[str, float]:
     """Verify the two properties the surrogate training relies on.
 
@@ -625,11 +647,15 @@ def check_teacher(
        Hessian-vector product is taken with ``create_graph=True`` and a gradient
        is pulled back through it to the vector it contracts with. A teacher that
        fails this trains a student on a constant.
-    2. The Hessian-vector product agrees with a central finite difference of the
-       forces, which is what makes it a Hessian rather than an artefact of the
-       kernels.
+    2. The Hessian-vector product is a Hessian rather than an artefact of the
+       kernels, checked against a central difference of the forces.
 
-    Returns the two relative deviations.
+    The second number does not go to zero. The reverse-mode product is
+    :math:`H^T v` while the finite difference is :math:`H v`, and MD-ET predicts
+    forces with a head rather than as a gradient, so its Hessian is only
+    symmetric to the extent that the model has learned to be conservative --
+    around 1e-3 relative for the released checkpoints. Read it as an upper bound
+    on the error that also contains the asymmetry, not as the error alone.
     """
     positions = batch[properties.R].detach().clone().requires_grad_(True)
     batch = dict(batch)
@@ -649,7 +675,6 @@ def check_teacher(
         raise RuntimeError("no finite gradient reaches the contracted vector")
 
     # central difference of the forces along `vector`
-    eps = 1e-3
     with torch.no_grad():
         plus = dict(batch)
         plus[properties.R] = positions.detach() + eps * vector.detach()

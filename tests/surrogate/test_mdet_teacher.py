@@ -26,7 +26,9 @@ def csr():
     """A small triplet CSR: 6 edges, rows of varying length, one empty row."""
     torch.manual_seed(0)
     counts = [3, 2, 0, 4, 1]
-    offsets = torch.tensor([0] + list(torch.tensor(counts).cumsum(0)), dtype=torch.int64)
+    offsets = torch.tensor(
+        [0] + list(torch.tensor(counts).cumsum(0)), dtype=torch.int64
+    )
     n_triplets = int(offsets[-1])
     n_edges = 6
     src = torch.randint(0, n_edges, (n_triplets,), dtype=torch.int32)
@@ -51,7 +53,9 @@ def test_softmax_matches_mdet_fallback(csr, qkvv):
     env_gate = torch.rand(n_triplets, dtype=torch.float64)
 
     ours = triplet_attention_softmax(qkvv, src, dst, 2, offsets, env_gate=env_gate)
-    theirs = sparse_triplet_attention_fallback(qkvv, src, dst, 2, offsets, env_gate=env_gate)
+    theirs = sparse_triplet_attention_fallback(
+        qkvv, src, dst, 2, offsets, env_gate=env_gate
+    )
     assert torch.allclose(ours, theirs, atol=1e-10)
 
 
@@ -88,9 +92,13 @@ def test_sigmoid_is_twice_differentiable(csr, qkvv):
     inv_sqrt_K = torch.rand(n_edges, dtype=torch.float64) + 0.5
     bias = torch.randn(2, dtype=torch.float64, requires_grad=True)
 
-    out = triplet_attention_sigmoid(qkvv, src, dst, 2, offsets, env_pair, inv_sqrt_K, bias)
+    out = triplet_attention_sigmoid(
+        qkvv, src, dst, 2, offsets, env_pair, inv_sqrt_K, bias
+    )
     (grad_qkvv,) = torch.autograd.grad(out.sum(), qkvv, create_graph=True)
-    second = torch.autograd.grad(grad_qkvv.sum(), [qkvv, env_pair, bias], allow_unused=True)
+    second = torch.autograd.grad(
+        grad_qkvv.sum(), [qkvv, env_pair, bias], allow_unused=True
+    )
     assert all(g is not None and torch.isfinite(g).all() for g in second)
 
 
