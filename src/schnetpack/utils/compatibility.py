@@ -92,4 +92,16 @@ def load_model(
         # no conversion needed
         model.spk_version = "2.2.0"
 
+    # `positivity` replaced `aggregation_mode="positive"`. Checkpoints pickled before that
+    # carry the old spelling and no `positivity` attribute at all, so their forward pass
+    # fails on an attribute that never existed. The old mode aggregated by sum and took the
+    # absolute value, which is exactly `aggregation_mode="sum", positivity="abs"`.
+    # Keyed on the attribute rather than on spk_version, because this drift is internal and
+    # did not move the version tag -- the affected checkpoints already report "2.2.0".
+    from schnetpack.atomistic import DampingFactor
+
+    for module in getattr(model, "output_modules", []):
+        if isinstance(module, DampingFactor) and not hasattr(module, "positivity"):
+            module.positivity = "abs" if module.aggregation_mode == "positive" else None
+
     return model
