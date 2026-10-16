@@ -1,0 +1,33 @@
+# @package _global_
+#
+# newton_step_training_horm_hvp with the damping predicted by a soft maximum over atoms
+# (schnetpack.atomistic.SoftMaxDampingFactor) instead of a sum over atoms.
+#
+# The damping a Newton step needs is set by the smallest Hessian eigenvalue. In a molecule with
+# several soft local modes (methyl rotors, amide groups) that is a minimum over sites, which a
+# sum of per-atom contributions cannot form; a soft maximum of per-atom scores can. Everything
+# else -- data, task, loss, damping penalty -- is inherited unchanged, so runs of the two
+# experiments differ only in the damping head.
+#
+#   spktrain experiment=newton_step_training_horm_hvp_softmax \
+#       globals.ref_model_path=/path/to/runs/<run>/best_model
+
+defaults:
+  - newton_step_training_horm_hvp
+  - _self_
+
+model:
+  output_modules:
+    - _target_: schnetpack.atomistic.NewtonStep
+      newton_step_key: ${globals.newton_step_key}
+      n_in: ${model.representation.n_atom_basis}
+      n_hidden: 60
+    - _target_: schnetpack.atomistic.SoftMaxDampingFactor
+      output_key: ${globals.damping_factor_key}
+      n_in: ${model.representation.n_atom_basis}
+      # lambda = softplus(init_offset + output_scale * tau * log sum_atoms exp(score / tau)),
+      # in the model's energy/distance^2 unit (kcal/mol/Ang^2 by default): a unit of per-atom
+      # score is output_scale of damping, and tau is in score units
+      output_scale: 10.0
+      init_tau: 0.5
+      init_offset: 0.0

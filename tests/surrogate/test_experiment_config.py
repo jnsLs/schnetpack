@@ -11,18 +11,23 @@ from hydra import compose, initialize_config_module
 from hydra.utils import instantiate
 from omegaconf import OmegaConf, open_dict
 
-EXPERIMENT = "newton_step_training_horm_hvp"
+EXPERIMENTS = ["newton_step_training_horm_hvp", "newton_step_training_horm_hvp_softmax"]
+
+
+@pytest.fixture(params=EXPERIMENTS)
+def experiment(request):
+    return request.param
 
 
 @pytest.fixture
-def experiment_config(ref_model_path):
+def experiment_config(experiment, ref_model_path):
     with initialize_config_module(
         config_module="schnetpack.configs", version_base="1.2"
     ):
         config = compose(
             config_name="train",
             overrides=[
-                f"experiment={EXPERIMENT}",
+                f"experiment={experiment}",
                 f"globals.ref_model_path={ref_model_path}",
                 "model.representation.n_atom_basis=16",
                 "model.representation.n_interactions=2",
@@ -54,16 +59,40 @@ def test_config_keys_match_the_property_constants(experiment_config):
 
 
 @pytest.mark.integration
-def test_ref_model_path_is_mandatory():
+def test_ref_model_path_is_mandatory(experiment):
     """The machine-specific path must be supplied, not silently defaulted."""
     from omegaconf.errors import MissingMandatoryValue
 
     with initialize_config_module(
         config_module="schnetpack.configs", version_base="1.2"
     ):
-        config = compose(config_name="train", overrides=[f"experiment={EXPERIMENT}"])
+        config = compose(config_name="train", overrides=[f"experiment={experiment}"])
     with pytest.raises(MissingMandatoryValue):
         _ = config.globals.ref_model_path
+
+
+@pytest.mark.integration
+def test_softmax_experiment_swaps_only_the_damping_head(ref_model_path):
+    """Everything but the damping head is inherited from the base experiment."""
+    configs = {}
+    for name in EXPERIMENTS:
+        with initialize_config_module(
+            config_module="schnetpack.configs", version_base="1.2"
+        ):
+            config = compose(
+                config_name="train",
+                overrides=[
+                    f"experiment={name}",
+                    f"globals.ref_model_path={ref_model_path}",
+                ],
+            )
+        configs[name] = OmegaConf.to_container(config, resolve=False)
+    base, softmax = (configs[name] for name in EXPERIMENTS)
+    base_head = base["model"]["output_modules"].pop(1)
+    softmax_head = softmax["model"]["output_modules"].pop(1)
+    assert base_head["_target_"] == "schnetpack.atomistic.DampingFactor"
+    assert softmax_head["_target_"] == "schnetpack.atomistic.SoftMaxDampingFactor"
+    assert base == softmax
 
 
 @pytest.mark.integration
