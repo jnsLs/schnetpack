@@ -1,0 +1,112 @@
+# @package _global_
+#
+# Trains a model to predict damped Newton steps from precomputed Hessians.
+#
+# The dataset holds the full Hessian H and the forces F of every structure, e.g.
+# from DFT. The task builds (H + lambda I) p from the stored Hessian and the
+# predicted step p, and the loss is its residual against F. Because H is known,
+# the damping is not learned but set from its smallest eigenvalue
+# (eigenvalue damping): lambda = 0 if e_min > 0, else -e_min + damping_offset.
+#
+#   spktrain experiment=newton_step_training_dense_hessian \
+#       data.dataset.datapath=/path/to/hessian_data.db \
+#       data.num_train=800 data.num_val=100
+
+defaults:
+  - override /model: nnp
+  - override /data: custom
+
+globals:
+  cutoff: 5.
+  lr: 1e-3
+  forces_key: forces
+  hessian_key: hessian
+  newton_step_key: newton_step
+  damping_factor_key: damping_factor
+  damped_hvp_key: damped_hvp
+  distance_unit: Ang
+  energy_unit: kcal/mol
+  # epsilon of the eigenvalue damping; 0.1 Hartree/Bohr^2 = 9.72 eV/Ang^2
+  damping_offset: 0.001
+  damping_offset_unit: Hartree/Bohr/Bohr
+
+data:
+  dataset:
+    distance_unit: ${globals.distance_unit}
+    load_properties:
+      - ${globals.forces_key}
+      - ${globals.hessian_key}
+    # keys must be literal, OmegaConf does not interpolate them
+    property_units:
+      forces: ${globals.energy_unit}/${globals.distance_unit}
+      hessian: ${globals.energy_unit}/${globals.distance_unit}/${globals.distance_unit}
+    transforms:
+      - _target_: schnetpack.transform.CachedNeighborList
+        cache_path: ${run.work_dir}/cache
+        cache_workdir: ${tmpdir:}/cache
+        keep_cache: False
+        neighbor_list:
+          _target_: schnetpack.transform.MatScipyNeighborList
+          cutoff: ${globals.cutoff}
+      - _target_: schnetpack.transform.CastTo32
+    test_transforms:
+      - _target_: schnetpack.transform.MatScipyNeighborList
+        cutoff: ${globals.cutoff}
+      - _target_: schnetpack.transform.CastTo32
+
+model:
+  output_modules:
+    - _target_: schnetpack.atomistic.NewtonStep
+      newton_step_key: ${globals.newton_step_key}
+      n_in: ${model.representation.n_atom_basis}
+      n_hidden: 60
+  postprocessors:
+    - _target_: schnetpack.transform.CastTo64
+
+task:
+  _target_: schnetpack.train.DenseHessianNewtonTask
+  hessian_unit: ${globals.energy_unit}/${globals.distance_unit}/${globals.distance_unit}
+  damping_offset: ${globals.damping_offset}
+  damping_offset_unit: ${globals.damping_offset_unit}
+  hessian_key: ${globals.hessian_key}
+  newton_step_key: ${globals.newton_step_key}
+  damping_factor_key: ${globals.damping_factor_key}
+  damped_hvp_key: ${globals.damped_hvp_key}
+  optimizer_cls: torch.optim.AdamW
+  optimizer_args:
+    lr: ${globals.lr}
+    weight_decay: 0.01
+  outputs:
+    # the damped Newton system, (H + lambda I) p = F; the loss below is its
+    # residual. The right-hand side is the dataset forces.
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.damped_hvp_key}
+      target_property: ${globals.forces_key}
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mae:
+          _target_: torchmetrics.regression.MeanAbsoluteError
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 1.00
+    # not trained on, logged to see how often and how strongly the Hessians
+    # are damped
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.damping_factor_key}
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+      loss_weight: 0.
+    # not trained on, logged to watch whether the predicted step actually
+    # points downhill
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.newton_step_key}
+      target_property: ${globals.forces_key}
+      metrics:
+        ascent_loss:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: True
+        mean_ascent:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: False
