@@ -505,6 +505,15 @@ class MDETTeacher(nn.Module):
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         from md_et.nn.types import Property as Props
 
+        # The patch lives on md_et's classes, not on this instance, so it does
+        # not travel with a pickle: a teacher saved with save_mdet_teacher and
+        # loaded back by torch.load / spktrain (ref_model_format=torch) would
+        # otherwise run MD-ET's Triton kernels, whose backward drops the
+        # envelope gradients (Ac-Ala3-NHMe: HVPs off by ~1e-3 relative, and no
+        # error is raised). Idempotent, so this is a no-op after the first call.
+        if not _PATCHED:
+            patch_mdet_for_autodiff()
+
         R = inputs[properties.R]
         Z = inputs[properties.Z]
         idx_m = inputs[properties.idx_m]

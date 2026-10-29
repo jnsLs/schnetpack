@@ -22,6 +22,17 @@ Nothing here modifies the reference potential. It is called as-is and only its
 ``forces`` output is read, so any model following SchNetPack's
 ``Dict[str, Tensor]`` interface can be used, whether saved with
 :func:`torch.save` or :func:`torch.jit.save`.
+
+Where the damping comes from is set by ``damping_source``:
+
+* ``"predicted"`` (default): the student predicts :math:`\\lambda` (the
+  ``DampingFactor`` head), as in the paper's learned damping.
+* ``"batch"``: eigenvalue damping from a per-structure smallest eigenvalue
+  stored in the dataset, :math:`\\lambda = \\mathrm{relu}(-e_{\\min}) +
+  \\varepsilon`.
+* ``"lanczos"``: the same rule, with :math:`e_{\\min}` computed on the fly by
+  Lanczos on the reference potential's Hessian-vector products
+  (:mod:`schnetpack.train.lanczos`), without forming the Hessian.
 """
 
 import contextlib
@@ -37,13 +48,23 @@ from schnetpack import properties
 from schnetpack.atomistic.response import expand_per_atom
 from schnetpack.model.base import AtomisticModel
 from schnetpack.task import AtomisticTask, ModelOutput
+from schnetpack.train.lanczos import lanczos_min_eigenvalue, remove_molecule_mean
+from schnetpack.units import convert_units
 from schnetpack.utils import load_model
 
-__all__ = ["NewtonSurrogateTask", "load_reference_model", "REF_MODEL_FORMATS"]
+__all__ = [
+    "NewtonSurrogateTask",
+    "load_reference_model",
+    "REF_MODEL_FORMATS",
+    "DAMPING_SOURCES",
+]
 
 #: Accepted values of ``ref_model_format``. ``"auto"`` tries TorchScript first
 #: and falls back to a pickled module.
 REF_MODEL_FORMATS = ("auto", "torch", "torchscript")
+
+#: Accepted values of ``damping_source`` of :class:`NewtonSurrogateTask`.
+DAMPING_SOURCES = ("predicted", "batch", "lanczos")
 
 #: Class-name fragments of modules that behave differently in train and eval
 #: mode. The reference potential has to run in train mode (see
@@ -141,7 +162,9 @@ def load_reference_model(
 class NewtonSurrogateTask(AtomisticTask):
     """Trains a model to solve the damped Newton system of a reference potential.
 
-    The student predicts the step :math:`p` and the damping :math:`\\lambda`.
+    The student predicts the step :math:`p` and, with the default
+    ``damping_source="predicted"``, the damping :math:`\\lambda` (otherwise the
+    task supplies :math:`\\lambda` by eigenvalue damping, see ``damping_source``).
     This task then runs the frozen reference potential over the same structures
     and adds two more entries to the predictions:
 
@@ -178,6 +201,15 @@ class NewtonSurrogateTask(AtomisticTask):
         scheduler_args: Optional[Dict[str, Any]] = None,
         scheduler_monitor: Optional[str] = None,
         warmup_steps: int = 0,
+        damping_source: str = "predicted",
+        damping_eps: float = 0.0,
+        damping_eps_unit: Optional[str] = None,
+        damping_unit: Optional[str] = None,
+        emin_key: str = "e_min",
+        lanczos_steps: int = 20,
+        lanczos_seed: Optional[int] = 0,
+        lanczos_project_translations: bool = True,
+        remove_teacher_net_force: bool = False,
     ):
         """
         Args:
@@ -199,7 +231,67 @@ class NewtonSurrogateTask(AtomisticTask):
             scheduler_args: Dict of scheduler keyword arguments.
             scheduler_monitor: Name of metric to be observed for ReduceLROnPlateau.
             warmup_steps: Number of steps to linearly increase the learning rate.
+            damping_source: Where :math:`\\lambda` comes from, one of
+                :data:`DAMPING_SOURCES`. ``"predicted"`` reads the student's
+                ``damping_factor_key`` output. ``"batch"`` and ``"lanczos"``
+                use eigenvalue damping, :math:`\\lambda = \\mathrm{relu}(-e_{\\min})
+                + \\varepsilon`, with :math:`e_{\\min}` read from
+                ``batch[emin_key]`` or computed by Lanczos on the reference
+                potential. In those two modes the student must not predict
+                ``damping_factor_key`` itself: the task writes the damping it
+                used there (detached), and :math:`e_{\\min}` under ``emin_key``,
+                so both can be logged as metrics.
+            damping_eps: :math:`\\varepsilon`, in the energy/length² units of
+                the reference model's forces (e.g. kcal/mol/Å²). Ignored for
+                ``"predicted"``. The paper's 0.1 Ha/Bohr² is 9.717 eV/Å² or
+                224.1 kcal/mol/Å².
+            damping_eps_unit, damping_unit: Optional unit conversion of
+                ``damping_eps``: if both are given (e.g. ``"eV/Ang/Ang"`` and
+                ``"kcal/mol/Ang/Ang"``), ``damping_eps`` is read in
+                ``damping_eps_unit`` and converted to ``damping_unit``, which must
+                be the energy/length² unit of the reference forces.
+            emin_key: Batch key of the per-structure smallest Hessian eigenvalue
+                for ``"batch"`` (same units as ``damping_eps``), and the
+                prediction key :math:`e_{\\min}` is written to in both
+                eigenvalue modes. Whether :math:`e_{\\min}` was computed with
+                the translations projected out (as the Lanczos precompute does)
+                or from the raw Hessian makes no difference to the damping: the
+                raw Hessian's extra eigenvalues are exact zeros.
+            lanczos_steps: Lanczos steps (= extra reference backward passes per
+                batch) for ``"lanczos"``.
+            lanczos_seed: Seed of the Lanczos start vector.
+            lanczos_project_translations: Run Lanczos on :math:`P H P`, the
+                Hessian with the three translations projected out. See
+                :mod:`schnetpack.train.lanczos`.
+            remove_teacher_net_force: Subtract each molecule's mean from the
+                reference forces before they are used, on both sides of the
+                Newton system. For direct-force teachers (e.g. MD-ET) the net
+                force is not zero, and with small damping it would produce a
+                rigid translation of about :math:`F_{net} / \\lambda` in the
+                step. The subtraction is differentiable, so the Hessian-vector
+                product becomes :math:`-J^T P p` and ignores the step's own
+                translation. A no-op (up to rounding) for conservative
+                teachers.
         """
+        if damping_source not in DAMPING_SOURCES:
+            raise ValueError(
+                f"unknown damping_source {damping_source!r}, expected one of "
+                f"{DAMPING_SOURCES}"
+            )
+        if lanczos_steps < 1:
+            raise ValueError(f"lanczos_steps must be >= 1, got {lanczos_steps}")
+        if (damping_eps_unit is None) != (damping_unit is None):
+            raise ValueError(
+                "give both damping_eps_unit and damping_unit, or neither "
+                f"(got {damping_eps_unit!r} and {damping_unit!r})"
+            )
+        # Converted into a new name: save_hyperparameters() records this
+        # frame's arguments, and the task is rebuilt from them when a checkpoint
+        # is loaded -- rebinding damping_eps here would convert it twice.
+        eps_in_damping_unit = float(damping_eps)
+        if damping_eps_unit is not None:
+            eps_in_damping_unit *= convert_units(damping_eps_unit, damping_unit)
+
         super().__init__(
             model=model,
             outputs=outputs,
@@ -217,6 +309,13 @@ class NewtonSurrogateTask(AtomisticTask):
         self.damping_factor_key = damping_factor_key
         self.ref_force_key = ref_force_key
         self.damped_hvp_key = damped_hvp_key
+        self.damping_source = damping_source
+        self.damping_eps = eps_in_damping_unit
+        self.emin_key = emin_key
+        self.lanczos_steps = int(lanczos_steps)
+        self.lanczos_seed = lanczos_seed
+        self.lanczos_project_translations = lanczos_project_translations
+        self.remove_teacher_net_force = remove_teacher_net_force
 
         self._load_ref_model()
 
@@ -280,8 +379,13 @@ class NewtonSurrogateTask(AtomisticTask):
                 "-dE/dR, or when gradients are globally disabled."
             )
 
+        if self.remove_teacher_net_force:
+            forces = remove_molecule_mean(
+                forces, batch[properties.idx_m], batch[properties.n_atoms]
+            )
+
         step = pred[self.newton_step_key]
-        damping = pred[self.damping_factor_key]
+        damping = self._damping(batch, pred, forces, positions)
 
         # F = -dE/dR, so d(F.p)/dR = -H p. create_graph must be True in
         # training: it is what lets gradients reach the model that produced the
@@ -300,6 +404,87 @@ class NewtonSurrogateTask(AtomisticTask):
         pred[self.ref_force_key] = forces
         pred[self.damped_hvp_key] = hessian_product + damped_part
         return pred
+
+    def _damping(
+        self,
+        batch: Dict[str, torch.Tensor],
+        pred: Dict[str, torch.Tensor],
+        forces: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        """The per-molecule damping, from the source chosen at construction.
+
+        For the eigenvalue sources the damping is a constant of the loss: it is
+        detached, and written to the predictions (with :math:`e_{\\min}`) only so
+        that it can be logged.
+        """
+        if self.damping_source == "predicted":
+            return pred[self.damping_factor_key]
+
+        if self.damping_factor_key in pred:
+            raise ValueError(
+                f"damping_source={self.damping_source!r} computes the damping, "
+                f"but the model also predicts {self.damping_factor_key!r}. "
+                "Remove the DampingFactor head from model.output_modules (or "
+                "give it another output_key)."
+            )
+
+        n_mol = batch[properties.n_atoms].shape[0]
+        if self.damping_source == "batch":
+            if self.emin_key not in batch:
+                raise KeyError(
+                    f"damping_source='batch' needs {self.emin_key!r} in the batch; "
+                    f"load it with data.dataset.load_properties=[{self.emin_key}] "
+                    "(and convert it to the model's energy/length^2 units with "
+                    "data.dataset.property_units)"
+                )
+            e_min = batch[self.emin_key].detach().reshape(-1)
+            if e_min.shape[0] != n_mol:
+                raise ValueError(
+                    f"batch[{self.emin_key!r}] has {e_min.shape[0]} entries for "
+                    f"{n_mol} molecules; expected one scalar per structure"
+                )
+        else:
+            e_min = self._lanczos_e_min(batch, forces, positions)
+
+        e_min = e_min.to(dtype=forces.dtype, device=forces.device)
+        damping = torch.relu(-e_min) + self.damping_eps
+        pred[self.emin_key] = e_min
+        pred[self.damping_factor_key] = damping
+        return damping
+
+    def _lanczos_e_min(
+        self,
+        batch: Dict[str, torch.Tensor],
+        forces: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Smallest eigenvalue of every molecule's reference Hessian, by Lanczos.
+
+        Each matvec is one more backward pass through the reference graph that
+        is already there, without ``create_graph``: nothing flows back into the
+        student from here. Reverse mode yields :math:`H^T v`; see
+        :mod:`schnetpack.train.lanczos` for what that means for direct-force
+        teachers.
+        """
+
+        def hvp(vector: torch.Tensor) -> torch.Tensor:
+            return -grad(
+                forces,
+                positions,
+                vector.to(forces.dtype),
+                retain_graph=True,
+            )[0]
+
+        result = lanczos_min_eigenvalue(
+            hvp,
+            batch[properties.idx_m],
+            batch[properties.n_atoms],
+            k=self.lanczos_steps,
+            project_translations=self.lanczos_project_translations,
+            seed=self.lanczos_seed,
+        )
+        return result.e_min
 
     def _apply(self, fn, *args, **kwargs):
         """Keep the unregistered reference potential on the task's device/dtype."""

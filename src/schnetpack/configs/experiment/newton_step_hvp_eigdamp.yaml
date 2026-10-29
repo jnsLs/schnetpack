@@ -1,0 +1,149 @@
+# @package _global_
+#
+# Trains a model to predict damped Newton steps with EIGENVALUE damping,
+#
+#   lambda = relu(-e_min) + eps,
+#
+# where e_min is the smallest eigenvalue of the reference potential's Hessian
+# (translations projected out). Same on-the-fly residual loss as
+# newton_step_training_horm_hvp, ||(H + lambda I) p - F||^2 via Hessian-vector
+# products of a frozen reference potential, but lambda is not learned: there is
+# no DampingFactor head and no lambda penalty.
+#
+# Where e_min comes from (globals.damping_source):
+#   lanczos  computed on the fly, Lanczos on the reference HVPs under no_grad
+#            (globals.lanczos_steps extra reference backward passes per batch);
+#            nothing has to be in the database.
+#   batch    read per structure from the database key `e_min`, e.g. written by
+#            round2/lib/precompute_emin.py; use the _batch variant of this file
+#            (newton_step_hvp_eigdamp_batch), which loads and converts it.
+#
+# eps is given in globals.damping_eps_unit and converted to the units of the
+# reference forces per length (globals.energy_unit / distance_unit^2). The
+# paper's eps = 0.1 Ha/Bohr^2 = 9.717 eV/Ang^2.
+#
+#   spktrain experiment=newton_step_hvp_eigdamp \
+#       globals.ref_model_path=/path/to/teacher globals.ref_model_format=torch \
+#       globals.damping_eps=9.717 globals.lanczos_steps=20
+
+defaults:
+  - override /model: nnp
+  - override /data: custom
+
+globals:
+  cutoff: 5.
+  lr: 1e-3
+  ref_model_path: ???
+  # auto, torch or torchscript
+  ref_model_format: auto
+  energy_key: energy
+  forces_key: forces
+  newton_step_key: newton_step
+  damping_factor_key: damping_factor
+  damped_hvp_key: damped_hvp
+  ref_forces_key: ref_forces
+  emin_key: e_min
+  distance_unit: Ang
+  energy_unit: kcal/mol
+  # eigenvalue damping
+  damping_source: lanczos
+  damping_eps: 9.717
+  damping_eps_unit: eV/Ang/Ang
+  lanczos_steps: 20
+  lanczos_seed: 0
+  # subtract the per-molecule mean of the teacher forces (direct-force teachers
+  # such as MD-ET have a nonzero net force); a no-op for conservative teachers
+  remove_teacher_net_force: False
+
+data:
+  dataset:
+    distance_unit: ${globals.distance_unit}
+    load_properties: []
+    transforms:
+      - _target_: schnetpack.transform.CachedNeighborList
+        cache_path: ${run.work_dir}/cache
+        cache_workdir: ${tmpdir:}/cache
+        keep_cache: False
+        neighbor_list:
+          _target_: schnetpack.transform.MatScipyNeighborList
+          cutoff: ${globals.cutoff}
+      - _target_: schnetpack.transform.CastTo32
+    test_transforms:
+      - _target_: schnetpack.transform.MatScipyNeighborList
+        cutoff: ${globals.cutoff}
+      - _target_: schnetpack.transform.CastTo32
+
+model:
+  output_modules:
+    - _target_: schnetpack.atomistic.NewtonStep
+      newton_step_key: ${globals.newton_step_key}
+      n_in: ${model.representation.n_atom_basis}
+      n_hidden: 60
+  postprocessors:
+    - _target_: schnetpack.transform.CastTo64
+
+task:
+  _target_: schnetpack.train.NewtonSurrogateTask
+  ref_model_path: ${globals.ref_model_path}
+  ref_model_format: ${globals.ref_model_format}
+  ref_model_force_key: ${globals.forces_key}
+  newton_step_key: ${globals.newton_step_key}
+  damping_factor_key: ${globals.damping_factor_key}
+  ref_force_key: ${globals.ref_forces_key}
+  damped_hvp_key: ${globals.damped_hvp_key}
+  damping_source: ${globals.damping_source}
+  damping_eps: ${globals.damping_eps}
+  damping_eps_unit: ${globals.damping_eps_unit}
+  damping_unit: ${globals.energy_unit}/${globals.distance_unit}/${globals.distance_unit}
+  emin_key: ${globals.emin_key}
+  lanczos_steps: ${globals.lanczos_steps}
+  lanczos_seed: ${globals.lanczos_seed}
+  remove_teacher_net_force: ${globals.remove_teacher_net_force}
+  optimizer_cls: torch.optim.AdamW
+  optimizer_args:
+    lr: ${globals.lr}
+    weight_decay: 0.01
+  outputs:
+    # the damped Newton system, (H + lambda I) p = F; the loss is its residual
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.damped_hvp_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mae:
+          _target_: torchmetrics.regression.MeanAbsoluteError
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 1.00
+    # logged only (no loss): the damping the task used, and e_min, both in
+    # energy_unit / distance_unit^2
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.damping_factor_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.emin_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+        min:
+          _target_: torchmetrics.aggregation.MinMetric
+        max:
+          _target_: torchmetrics.aggregation.MaxMetric
+    # not trained on, logged to watch whether the predicted step points downhill
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.newton_step_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      metrics:
+        ascent_loss:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: True
+        mean_ascent:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: False

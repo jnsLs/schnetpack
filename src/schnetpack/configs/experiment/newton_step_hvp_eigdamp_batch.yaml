@@ -1,0 +1,29 @@
+# @package _global_
+#
+# newton_step_hvp_eigdamp with e_min read from the database instead of being
+# computed by Lanczos during training: lambda = relu(-e_min) + eps, with e_min
+# the per-structure key `e_min` (e.g. written by round2/lib/precompute_emin.py,
+# which stores it in the database's energy unit / distance unit^2). It is
+# converted on load to globals.energy_unit / globals.distance_unit^2.
+#
+# e_min must come from the SAME reference potential as globals.ref_model_path,
+# or the damping and the Hessian-vector products describe different PESs.
+#
+#   spktrain experiment=newton_step_hvp_eigdamp_batch \
+#       data.dataset.datapath=/path/to/db_with_e_min.db \
+#       globals.ref_model_path=/path/to/teacher globals.ref_model_format=torch \
+#       globals.damping_eps=9.717
+
+defaults:
+  - newton_step_hvp_eigdamp
+  - _self_
+
+globals:
+  damping_source: batch
+
+data:
+  dataset:
+    load_properties:
+      - ${globals.emin_key}
+    property_units:
+      e_min: ${globals.energy_unit}/${globals.distance_unit}/${globals.distance_unit}
