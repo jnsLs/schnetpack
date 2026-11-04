@@ -1,0 +1,86 @@
+# @package _global_
+#
+# newton_step_hvp_eigdamp_batch with the RELATIVE residual as the loss,
+#
+#   ||(H + lambda I) p - F||^2 / (||F||^2 + floor^2)   per structure,
+#
+# instead of the absolute ||(H + lambda I) p - F||^2. The absolute residual is
+# in force units, so near a minimum (small F) it is tiny whatever the step is,
+# and those structures barely enter the loss. Here every structure counts by
+# the fraction of its force the step leaves. The absolute residual is still
+# logged (loss_weight 0) under val_damped_hvp_*.
+#
+# globals.residual_floor is an rms force component in the reference force
+# units (energy_unit / distance_unit); the default 0.02306 kcal/mol/Ang is
+# 1e-3 eV/Ang.
+#
+#   spktrain experiment=newton_step_hvp_eigdamp_batch_rel \
+#       data.dataset.datapath=/path/to/db_with_e_min.db \
+#       globals.ref_model_path=/path/to/teacher globals.ref_model_format=torch
+
+defaults:
+  - newton_step_hvp_eigdamp_batch
+  - _self_
+
+globals:
+  residual_floor: 0.02306
+  relative_damped_hvp_key: damped_hvp_rel
+  relative_ref_forces_key: ref_forces_rel
+
+task:
+  residual_floor: ${globals.residual_floor}
+  relative_damped_hvp_key: ${globals.relative_damped_hvp_key}
+  relative_ref_force_key: ${globals.relative_ref_forces_key}
+  outputs:
+    # the loss: residual of the damped Newton system, each structure divided by
+    # its force scale (dimensionless)
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.relative_damped_hvp_key}
+      target_property: ${globals.relative_ref_forces_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 1.00
+    # logged only: the absolute residual the other experiments train on
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.damped_hvp_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mae:
+          _target_: torchmetrics.regression.MeanAbsoluteError
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 0.0
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.damping_factor_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.emin_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+        min:
+          _target_: torchmetrics.aggregation.MinMetric
+        max:
+          _target_: torchmetrics.aggregation.MaxMetric
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.newton_step_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      metrics:
+        ascent_loss:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: True
+        mean_ascent:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: False

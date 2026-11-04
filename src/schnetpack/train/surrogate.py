@@ -210,6 +210,9 @@ class NewtonSurrogateTask(AtomisticTask):
         lanczos_seed: Optional[int] = 0,
         lanczos_project_translations: bool = True,
         remove_teacher_net_force: bool = False,
+        residual_floor: Optional[float] = None,
+        relative_damped_hvp_key: str = "damped_hvp_rel",
+        relative_ref_force_key: str = "ref_forces_rel",
     ):
         """
         Args:
@@ -272,6 +275,20 @@ class NewtonSurrogateTask(AtomisticTask):
                 product becomes :math:`-J^T P p` and ignores the step's own
                 translation. A no-op (up to rounding) for conservative
                 teachers.
+            residual_floor: If given, also write both sides of the Newton
+                system divided by each molecule's force scale
+                :math:`s = \\sqrt{\\langle F^2 \\rangle + \\mathrm{floor}^2}`
+                (mean over atoms and components, detached), under
+                ``relative_damped_hvp_key`` and ``relative_ref_force_key``.
+                An MSE loss on these is the relative residual
+                :math:`\\|(H + \\lambda I) p - F\\|^2 / \\|F\\|^2`, which weights
+                structures near a minimum (small :math:`F`) as much as the
+                rest; the absolute residual lets them contribute almost
+                nothing. In the units of the reference forces; structures
+                with an rms force component below the floor are weighted as if
+                they were at it.
+            relative_damped_hvp_key, relative_ref_force_key: Prediction keys of
+                the scaled system, only written if ``residual_floor`` is set.
         """
         if damping_source not in DAMPING_SOURCES:
             raise ValueError(
@@ -316,6 +333,9 @@ class NewtonSurrogateTask(AtomisticTask):
         self.lanczos_seed = lanczos_seed
         self.lanczos_project_translations = lanczos_project_translations
         self.remove_teacher_net_force = remove_teacher_net_force
+        self.residual_floor = residual_floor
+        self.relative_damped_hvp_key = relative_damped_hvp_key
+        self.relative_ref_force_key = relative_ref_force_key
 
         self._load_ref_model()
 
@@ -403,7 +423,25 @@ class NewtonSurrogateTask(AtomisticTask):
 
         pred[self.ref_force_key] = forces
         pred[self.damped_hvp_key] = hessian_product + damped_part
+        if self.residual_floor is not None:
+            scale = self._inverse_force_scale(forces.detach(), batch)
+            pred[self.relative_ref_force_key] = forces * scale
+            pred[self.relative_damped_hvp_key] = pred[self.damped_hvp_key] * scale
         return pred
+
+    def _inverse_force_scale(
+        self, forces: torch.Tensor, batch: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """:math:`1 / \\sqrt{\\langle F^2 \\rangle + \\mathrm{floor}^2}` per
+        molecule, expanded to ``(n_atoms_total, 3)``."""
+        n_atoms = batch[properties.n_atoms]
+        sum_sq = torch.zeros(
+            n_atoms.shape[0], dtype=forces.dtype, device=forces.device
+        ).index_add(0, batch[properties.idx_m], (forces**2).sum(-1))
+        mean_sq = sum_sq / (3 * n_atoms.to(forces.dtype))
+        return expand_per_atom(
+            torch.rsqrt(mean_sq + self.residual_floor**2), n_atoms
+        )
 
     def _damping(
         self,

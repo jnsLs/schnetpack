@@ -466,3 +466,57 @@ def test_remove_teacher_net_force(step_only_student, ref_model_path, newton_batc
         rtol=1e-4,
         atol=1e-5,
     )
+
+
+def test_relative_residual_keys(step_only_student, ref_model_path, newton_batch):
+    """Both sides divided by sqrt(<F^2> + floor^2) per molecule; off by default."""
+    newton_batch["e_min"] = torch.tensor([-1.0, 0.5, -0.2])
+    plain = _task(step_only_student, ref_model_path, damping_source="batch")
+    plain.train()
+    pred = plain.augment_predictions(
+        newton_batch, plain.predict_without_postprocessing(newton_batch)
+    )
+    assert "damped_hvp_rel" not in pred and "ref_forces_rel" not in pred
+
+    floor = 0.3
+    task = _task(
+        step_only_student,
+        ref_model_path,
+        damping_source="batch",
+        residual_floor=floor,
+    )
+    task.train()
+    pred = task.augment_predictions(
+        newton_batch, task.predict_without_postprocessing(newton_batch)
+    )
+    f, hvp = pred[properties.ref_forces], pred[properties.damped_hvp]
+    n = newton_batch[properties.n_atoms]
+    s = torch.stack(
+        [
+            torch.sqrt((fm.detach() ** 2).mean() + floor**2)
+            for fm in torch.split(f, n.tolist())
+        ]
+    ).repeat_interleave(n)[:, None]
+    torch.testing.assert_close(pred["ref_forces_rel"], f / s)
+    torch.testing.assert_close(pred["damped_hvp_rel"], hvp / s)
+
+    # floor 0: the MSE is the atom-weighted mean of each molecule's
+    # ||r||^2 / ||F||^2
+    task.residual_floor = 0.0
+    pred = task.augment_predictions(
+        newton_batch, task.predict_without_postprocessing(newton_batch)
+    )
+    mse = torch.nn.functional.mse_loss(
+        pred["damped_hvp_rel"], pred["ref_forces_rel"].detach()
+    )
+    r = pred[properties.damped_hvp] - pred[properties.ref_forces]
+    rel = torch.stack(
+        [
+            (rm**2).sum() / (fm**2).sum()
+            for rm, fm in zip(
+                torch.split(r, n.tolist()),
+                torch.split(pred[properties.ref_forces], n.tolist()),
+            )
+        ]
+    )
+    torch.testing.assert_close(mse, (rel * n).sum() / n.sum())

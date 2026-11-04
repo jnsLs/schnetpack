@@ -35,6 +35,7 @@ def _config(experiment, ref_model_path, *extra):
     [
         ("newton_step_hvp_eigdamp", "lanczos"),
         ("newton_step_hvp_eigdamp_batch", "batch"),
+        ("newton_step_hvp_eigdamp_batch_rel", "batch"),
     ],
 )
 def test_eigdamp_config_runs_a_step(experiment, source, ref_model_path, newton_batch):
@@ -50,6 +51,10 @@ def test_eigdamp_config_runs_a_step(experiment, source, ref_model_path, newton_b
     # 9.717 eV/Ang^2 in kcal/mol/Ang^2
     assert task.damping_eps == pytest.approx(9.717 * 23.0605, rel=1e-4)
 
+    if experiment.endswith("_rel"):
+        assert task.residual_floor == pytest.approx(0.02306)
+        assert task.outputs[0].name == "damped_hvp_rel"
+        assert task.outputs[1].loss_weight == 0.0
     loss = task.training_step(newton_batch, 0)
     assert torch.isfinite(loss)
     loss.backward()
