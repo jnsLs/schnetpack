@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+import schnetpack as spk
 from hydra import compose, initialize_config_module
 from hydra.utils import instantiate
 from omegaconf import open_dict
@@ -36,6 +37,8 @@ def _config(experiment, ref_model_path, *extra):
         ("newton_step_hvp_eigdamp", "lanczos"),
         ("newton_step_hvp_eigdamp_batch", "batch"),
         ("newton_step_hvp_eigdamp_batch_rel", "batch"),
+        ("newton_step_hvp_eigdamp_batch_fin", "batch"),
+        ("newton_step_hvp_eigdamp_batch_fin_rel", "batch"),
     ],
 )
 def test_eigdamp_config_runs_a_step(experiment, source, ref_model_path, newton_batch):
@@ -55,7 +58,17 @@ def test_eigdamp_config_runs_a_step(experiment, source, ref_model_path, newton_b
         assert task.residual_floor == pytest.approx(0.02306)
         assert task.outputs[0].name == "damped_hvp_rel"
         assert task.outputs[1].loss_weight == 0.0
+    if "_fin" in experiment:
+        assert task.force_input_key == "input_forces"
+        assert model.representation.vector_input_key == "force_input_dir"
+        assert model.representation.scalar_input_net.weight.shape == (16, 2)
+        assert isinstance(model.input_modules[1], spk.atomistic.ForceInput)
+    else:
+        assert task.force_input_key is None
     loss = task.training_step(newton_batch, 0)
+    if "_fin" in experiment:
+        assert "input_forces" in newton_batch
+        assert model.representation.vector_input_weight.grad is None
     assert torch.isfinite(loss)
     loss.backward()
     assert any(

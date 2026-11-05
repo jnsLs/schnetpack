@@ -1,0 +1,45 @@
+# @package _global_
+#
+# newton_step_hvp_eigdamp_batch with the reference FORCES AS AN INPUT to the
+# student (fin = force input). The task computes the teacher forces before the
+# student runs and writes them into the batch; ForceInput splits them into a
+# per-molecule scale and a direction, which PaiNN takes as its initial vector
+# features (plus log scale and log |F_i| as scalars). All new weights start at
+# zero, so a model initialized from a geometry-only student starts out
+# identical to it.
+#
+# The student then learns the action of (H + lambda I)^-1 on a known F,
+# instead of having to infer F from the geometry -- which it cannot do near a
+# minimum, where F is below its own force error. The loss is the absolute
+# residual, as in newton_step_hvp_eigdamp_batch; see _fin_rel for the relative
+# one. At inference the caller supplies the forces (model units, net force
+# removed if remove_teacher_net_force) under globals.force_input_key.
+#
+#   spktrain experiment=newton_step_hvp_eigdamp_batch_fin \
+#       data.dataset.datapath=/path/to/db_with_e_min.db \
+#       globals.ref_model_path=/path/to/teacher globals.ref_model_format=torch
+
+defaults:
+  - newton_step_hvp_eigdamp_batch
+  - _self_
+
+globals:
+  force_input_key: input_forces
+  # floor of the force scale, in energy_unit / distance_unit (1e-3 eV/Ang)
+  force_input_floor: 0.02306
+
+model:
+  input_modules:
+    - _target_: schnetpack.atomistic.PairwiseDistances
+    - _target_: schnetpack.atomistic.ForceInput
+      force_key: ${globals.force_input_key}
+      floor: ${globals.force_input_floor}
+      direction_key: force_input_dir
+      scalars_key: force_input_scalars
+  representation:
+    vector_input_key: force_input_dir
+    scalar_input_key: force_input_scalars
+    n_scalar_inputs: 2
+
+task:
+  force_input_key: ${globals.force_input_key}

@@ -213,6 +213,7 @@ class NewtonSurrogateTask(AtomisticTask):
         residual_floor: Optional[float] = None,
         relative_damped_hvp_key: str = "damped_hvp_rel",
         relative_ref_force_key: str = "ref_forces_rel",
+        force_input_key: Optional[str] = None,
     ):
         """
         Args:
@@ -289,6 +290,17 @@ class NewtonSurrogateTask(AtomisticTask):
                 they were at it.
             relative_damped_hvp_key, relative_ref_force_key: Prediction keys of
                 the scaled system, only written if ``residual_floor`` is set.
+            force_input_key: If given, the reference forces are computed
+                *before* the student runs and written, detached, into the batch
+                under this key, so the student can take them as an input (see
+                :class:`~schnetpack.atomistic.ForceInput`). The student then
+                only has to learn the action of :math:`(H + \\lambda I)^{-1}`
+                on a known right-hand side, not the right-hand side itself.
+                The same forces, with their graph, are reused for the
+                Hessian-vector product, so the reference potential still runs
+                once per batch. At inference the caller has to supply the
+                forces under this key, in the reference model's units, with
+                the net force removed if ``remove_teacher_net_force`` is set.
         """
         if damping_source not in DAMPING_SOURCES:
             raise ValueError(
@@ -336,6 +348,7 @@ class NewtonSurrogateTask(AtomisticTask):
         self.residual_floor = residual_floor
         self.relative_damped_hvp_key = relative_damped_hvp_key
         self.relative_ref_force_key = relative_ref_force_key
+        self.force_input_key = force_input_key
 
         self._load_ref_model()
 
@@ -371,17 +384,14 @@ class NewtonSurrogateTask(AtomisticTask):
         finally:
             self.ref_model.train(was_training)
 
-    def augment_predictions(
-        self, batch: Dict[str, torch.Tensor], pred: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
-        """Add both sides of the damped Newton system to the predictions.
+    #: Batch key the reference forces (with their graph) travel under from
+    #: :meth:`predict_without_postprocessing` to :meth:`augment_predictions`
+    #: when the student takes them as an input.
+    _ref_forces_graph_key = "_ref_forces_graph"
 
-        Runs after the model, whose step and damping it needs. The positions
-        are made differentiable here rather than before the model runs: the
-        model itself takes no derivative of them, and marking them earlier
-        would add edges to the backward graph that change the order autograd
-        accumulates in -- enough to move gradients in the last bits.
-        """
+    def _reference_forces(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Run the reference potential; return its forces, differentiable in
+        the positions (which are marked as requiring grad here)."""
         positions = batch[properties.R]
         positions.requires_grad_()
 
@@ -403,6 +413,32 @@ class NewtonSurrogateTask(AtomisticTask):
             forces = remove_molecule_mean(
                 forces, batch[properties.idx_m], batch[properties.n_atoms]
             )
+        return forces
+
+    def predict_without_postprocessing(self, batch):
+        if self.force_input_key is not None:
+            forces = self._reference_forces(batch)
+            batch[self._ref_forces_graph_key] = forces
+            batch[self.force_input_key] = forces.detach()
+        return super().predict_without_postprocessing(batch)
+
+    def augment_predictions(
+        self, batch: Dict[str, torch.Tensor], pred: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Add both sides of the damped Newton system to the predictions.
+
+        Runs after the model, whose step and damping it needs. Without a force
+        input, the positions are made differentiable here rather than before
+        the model runs: the model itself takes no derivative of them, and
+        marking them earlier would add edges to the backward graph that change
+        the order autograd accumulates in -- enough to move gradients in the
+        last bits. With a force input the reference potential has already run
+        (:meth:`predict_without_postprocessing`) and its forces are reused.
+        """
+        forces = batch.pop(self._ref_forces_graph_key, None)
+        if forces is None:
+            forces = self._reference_forces(batch)
+        positions = batch[properties.R]
 
         step = pred[self.newton_step_key]
         damping = self._damping(batch, pred, forces, positions)

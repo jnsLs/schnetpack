@@ -139,6 +139,9 @@ class PaiNN(nn.Module):
         epsilon: float = 1e-8,
         nuclear_embedding: Optional[nn.Module] = None,
         electronic_embeddings: Optional[List] = None,
+        vector_input_key: Optional[str] = None,
+        scalar_input_key: Optional[str] = None,
+        n_scalar_inputs: int = 0,
     ):
         """
         Args:
@@ -156,6 +159,17 @@ class PaiNN(nn.Module):
             nuclear_embedding: custom nuclear embedding (e.g. spk.nn.embeddings.NuclearEmbedding)
             electronic_embeddings: list of electronic embeddings. E.g. for spin and
                 charge (see spk.nn.embeddings.ElectronicEmbedding)
+            vector_input_key: optional input key of one vector per atom, shape
+                ``(n_atoms, 3)`` (e.g. the force direction written by
+                :class:`~schnetpack.atomistic.ForceInput`). It initializes the
+                vector features, scaled per channel by a learned weight that
+                starts at zero, so a model with this input starts out identical
+                to one without.
+            scalar_input_key: optional input key of ``n_scalar_inputs`` scalars
+                per atom, shape ``(n_atoms, n_scalar_inputs)``, added to the
+                initial scalar features through a linear layer that starts at
+                zero.
+            n_scalar_inputs: number of scalars under ``scalar_input_key``.
         """
         super(PaiNN, self).__init__()
 
@@ -173,6 +187,23 @@ class PaiNN(nn.Module):
             electronic_embeddings = []
         electronic_embeddings = nn.ModuleList(electronic_embeddings)
         self.electronic_embeddings = electronic_embeddings
+
+        # Optional vector and scalar inputs. Models saved before these existed
+        # lack the attributes, hence the hasattr checks in forward.
+        self.vector_input_key = vector_input_key
+        self.scalar_input_key = scalar_input_key
+        if vector_input_key is not None:
+            self.vector_input_weight = nn.Parameter(torch.zeros(n_atom_basis))
+        if scalar_input_key is not None:
+            if n_scalar_inputs < 1:
+                raise ValueError(
+                    f"scalar_input_key={scalar_input_key!r} needs n_scalar_inputs >= 1"
+                )
+            self.scalar_input_net = snn.Dense(
+                n_scalar_inputs, n_atom_basis, activation=None
+            )
+            nn.init.zeros_(self.scalar_input_net.weight)
+            nn.init.zeros_(self.scalar_input_net.bias)
 
         # initialize filter layers
         self.share_filters = shared_filters
@@ -238,11 +269,19 @@ class PaiNN(nn.Module):
         q = self.embedding(atomic_numbers)
         for embedding in self.electronic_embeddings:
             q = q + embedding(q, inputs)
+        if hasattr(self, "scalar_input_key"):
+            if self.scalar_input_key is not None:
+                q = q + self.scalar_input_net(inputs[self.scalar_input_key])
         q = q.unsqueeze(1)
 
         # compute interaction blocks and update atomic embeddings
         qs = q.shape
         mu = torch.zeros((qs[0], 3, qs[2]), device=q.device)
+        if hasattr(self, "vector_input_key"):
+            if self.vector_input_key is not None:
+                mu = mu + inputs[self.vector_input_key].unsqueeze(-1) * (
+                    self.vector_input_weight
+                )
         for i, (interaction, mixing) in enumerate(zip(self.interactions, self.mixing)):
             q, mu = interaction(q, mu, filter_list[i], dir_ij, idx_i, idx_j, n_atoms)
             q, mu = mixing(q, mu)

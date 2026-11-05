@@ -1,0 +1,36 @@
+# @package _global_
+#
+# newton_step_hvp_eigdamp_batch_rel (relative residual loss) with the reference
+# forces as an input to the student. See newton_step_hvp_eigdamp_batch_fin for
+# the force input and newton_step_hvp_eigdamp_batch_rel for the loss. With a
+# known right-hand side the relative residual is the error of the learned
+# operator itself, which is what weighting structures near a minimum like the
+# rest was meant to train.
+#
+#   spktrain experiment=newton_step_hvp_eigdamp_batch_fin_rel \
+#       data.dataset.datapath=/path/to/db_with_e_min.db \
+#       globals.ref_model_path=/path/to/teacher globals.ref_model_format=torch
+
+defaults:
+  - newton_step_hvp_eigdamp_batch_rel
+  - _self_
+
+globals:
+  force_input_key: input_forces
+  force_input_floor: 0.02306
+
+model:
+  input_modules:
+    - _target_: schnetpack.atomistic.PairwiseDistances
+    - _target_: schnetpack.atomistic.ForceInput
+      force_key: ${globals.force_input_key}
+      floor: ${globals.force_input_floor}
+      direction_key: force_input_dir
+      scalars_key: force_input_scalars
+  representation:
+    vector_input_key: force_input_dir
+    scalar_input_key: force_input_scalars
+    n_scalar_inputs: 2
+
+task:
+  force_input_key: ${globals.force_input_key}
