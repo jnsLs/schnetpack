@@ -39,13 +39,22 @@ def _config(experiment, ref_model_path, *extra):
         ("newton_step_hvp_eigdamp_batch_rel", "batch"),
         ("newton_step_hvp_eigdamp_batch_fin", "batch"),
         ("newton_step_hvp_eigdamp_batch_fin_rel", "batch"),
+        ("newton_step_hvp_eigdamp_batch_rel_step", "batch"),
+        ("newton_step_hvp_eigdamp_batch_fin_rel_step", "batch"),
     ],
 )
 def test_eigdamp_config_runs_a_step(experiment, source, ref_model_path, newton_batch):
     config = _config(experiment, ref_model_path, "globals.lanczos_steps=8")
     assert config.task.damping_source == source
     if source == "batch":
-        assert list(config.data.dataset.load_properties) == ["e_min"]
+        props = ["e_min"]
+        if experiment.endswith("_step"):
+            props += ["newton_step_ref", "has_newton_step_ref"]
+            newton_batch["newton_step_ref"] = 0.1 * torch.randn(
+                newton_batch["_positions"].shape, dtype=torch.float64
+            )
+            newton_batch["has_newton_step_ref"] = torch.tensor([1.0, 0.0, 1.0])
+        assert list(config.data.dataset.load_properties) == props
         assert config.data.dataset.property_units.e_min == "kcal/mol/Ang/Ang"
         newton_batch["e_min"] = torch.tensor([-50.0, -10.0, 3.0])
 
@@ -54,10 +63,11 @@ def test_eigdamp_config_runs_a_step(experiment, source, ref_model_path, newton_b
     # 9.717 eV/Ang^2 in kcal/mol/Ang^2
     assert task.damping_eps == pytest.approx(9.717 * 23.0605, rel=1e-4)
 
-    if experiment.endswith("_rel"):
+    if "_rel" in experiment:
         assert task.residual_floor == pytest.approx(0.02306)
         assert task.outputs[0].name == "damped_hvp_rel"
-        assert task.outputs[1].loss_weight == 0.0
+        (absolute,) = [o for o in task.outputs if o.name == "damped_hvp"]
+        assert absolute.loss_weight == 0.0
     if "_fin" in experiment:
         assert task.force_input_key == "input_forces"
         assert model.representation.vector_input_key == "force_input_dir"
@@ -65,6 +75,16 @@ def test_eigdamp_config_runs_a_step(experiment, source, ref_model_path, newton_b
         assert isinstance(model.input_modules[1], spk.atomistic.ForceInput)
     else:
         assert task.force_input_key is None
+    if experiment.endswith("_step"):
+        assert task.step_target_key == "newton_step_ref"
+        assert task.step_target_mask_key == "has_newton_step_ref"
+        assert task.step_floor == pytest.approx(0.001)
+        names = [o.name for o in task.outputs]
+        assert names[:2] == ["damped_hvp_rel", "newton_step_rel"]
+        assert task.outputs[1].target_property == "newton_step_ref_rel"
+        assert task.outputs[1].loss_weight == 1.0
+    else:
+        assert task.step_target_key is None
     loss = task.training_step(newton_batch, 0)
     if "_fin" in experiment:
         assert "input_forces" in newton_batch

@@ -1,0 +1,107 @@
+# @package _global_
+#
+# Mixin, not an experiment of its own: adds a RELATIVE STEP loss on structures
+# that carry a precomputed solution p* of the damped Newton system,
+#
+#   ||p - p*||^2 / (||p*||^2 + floor^2)   per structure with a target,
+#
+# next to the relative residual loss of newton_step_hvp_eigdamp_batch_rel. The
+# residual weights the error of a Hessian eigenmode by (e_i + lambda)^2; near a
+# minimum lambda is small and the soft modes, which carry almost all of the
+# step, are nearly invisible to it. The step error weights every mode alike.
+#
+# The database holds p* under globals.step_target_key (per atom, in the
+# distance unit; e.g. written by round2/forcein/merge_pstar.py from the
+# materialised teacher Hessian, (H^T P + lambda I) p* = P F with the same lambda
+# the batch damping uses) and a 0/1 flag per structure under
+# globals.step_target_mask_key; structures without a target contribute nothing
+# to the step loss. globals.step_floor is an rms step component in the distance
+# unit.
+#
+# Included after newton_step_hvp_eigdamp_batch_rel (or _fin_rel) in the
+# defaults list of newton_step_hvp_eigdamp_batch_rel_step and _fin_rel_step.
+
+globals:
+  step_target_key: newton_step_ref
+  step_target_mask_key: has_newton_step_ref
+  step_floor: 0.001
+  step_loss_weight: 1.0
+  relative_step_key: newton_step_rel
+  relative_step_target_key: newton_step_ref_rel
+
+data:
+  dataset:
+    load_properties:
+      - ${globals.emin_key}
+      - ${globals.step_target_key}
+      - ${globals.step_target_mask_key}
+
+task:
+  step_target_key: ${globals.step_target_key}
+  step_target_mask_key: ${globals.step_target_mask_key}
+  step_floor: ${globals.step_floor}
+  relative_step_key: ${globals.relative_step_key}
+  relative_step_target_key: ${globals.relative_step_target_key}
+  outputs:
+    # the relative residual (as newton_step_hvp_eigdamp_batch_rel)
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.relative_damped_hvp_key}
+      target_property: ${globals.relative_ref_forces_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 1.00
+    # the relative step error on structures with a precomputed p*
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.relative_step_key}
+      target_property: ${globals.relative_step_target_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: ${globals.step_loss_weight}
+    # logged only: the absolute residual the other experiments train on
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.damped_hvp_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mae:
+          _target_: torchmetrics.regression.MeanAbsoluteError
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 0.0
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.damping_factor_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.emin_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+        min:
+          _target_: torchmetrics.aggregation.MinMetric
+        max:
+          _target_: torchmetrics.aggregation.MaxMetric
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.newton_step_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      metrics:
+        ascent_loss:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: True
+        mean_ascent:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: False

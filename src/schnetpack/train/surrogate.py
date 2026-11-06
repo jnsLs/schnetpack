@@ -214,6 +214,11 @@ class NewtonSurrogateTask(AtomisticTask):
         relative_damped_hvp_key: str = "damped_hvp_rel",
         relative_ref_force_key: str = "ref_forces_rel",
         force_input_key: Optional[str] = None,
+        step_target_key: Optional[str] = None,
+        step_target_mask_key: Optional[str] = None,
+        step_floor: float = 0.0,
+        relative_step_key: str = "newton_step_rel",
+        relative_step_target_key: str = "newton_step_ref_rel",
     ):
         """
         Args:
@@ -301,6 +306,27 @@ class NewtonSurrogateTask(AtomisticTask):
                 once per batch. At inference the caller has to supply the
                 forces under this key, in the reference model's units, with
                 the net force removed if ``remove_teacher_net_force`` is set.
+            step_target_key: If given, the batch holds a precomputed solution
+                :math:`p^*` of the damped Newton system under this key (per
+                atom, in the positions' unit), and the task also writes the
+                predicted step and :math:`p^*` divided by each molecule's step
+                scale :math:`\\sqrt{\\langle p^{*2} \\rangle + \\mathrm{floor}^2}`
+                (mean over atoms and components, detached) under
+                ``relative_step_key`` and ``relative_step_target_key``. An MSE
+                loss on these is the relative step error
+                :math:`\\|p - p^*\\|^2 / \\|p^*\\|^2`. The residual loss weights
+                the error of a Hessian eigenmode by :math:`(e_i + \\lambda)^2`,
+                so near a minimum, where :math:`\\lambda` is small, the soft
+                modes that carry almost all of the step are nearly invisible
+                to it; the step error weights every mode alike.
+            step_target_mask_key: Optional per-molecule batch key (0 or 1) that
+                says which molecules have a target. Both scaled tensors are
+                zero for the others, so they add nothing to the loss, and
+                :math:`p^*` may hold anything there.
+            step_floor: Floor of the step scale, in the positions' unit.
+            relative_step_key, relative_step_target_key: Prediction keys of the
+                scaled step and target, only written if ``step_target_key`` is
+                set.
         """
         if damping_source not in DAMPING_SOURCES:
             raise ValueError(
@@ -349,6 +375,11 @@ class NewtonSurrogateTask(AtomisticTask):
         self.relative_damped_hvp_key = relative_damped_hvp_key
         self.relative_ref_force_key = relative_ref_force_key
         self.force_input_key = force_input_key
+        self.step_target_key = step_target_key
+        self.step_target_mask_key = step_target_mask_key
+        self.step_floor = step_floor
+        self.relative_step_key = relative_step_key
+        self.relative_step_target_key = relative_step_target_key
 
         self._load_ref_model()
 
@@ -463,7 +494,30 @@ class NewtonSurrogateTask(AtomisticTask):
             scale = self._inverse_force_scale(forces.detach(), batch)
             pred[self.relative_ref_force_key] = forces * scale
             pred[self.relative_damped_hvp_key] = pred[self.damped_hvp_key] * scale
+        if self.step_target_key is not None:
+            target = batch[self.step_target_key].to(step.dtype)
+            scale = self._inverse_step_scale(target, batch)
+            pred[self.relative_step_key] = step * scale
+            pred[self.relative_step_target_key] = target * scale
         return pred
+
+    def _inverse_step_scale(
+        self, target: torch.Tensor, batch: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """:math:`m / \\sqrt{\\langle p^{*2} \\rangle + \\mathrm{floor}^2}` per
+        molecule, with the mask :math:`m` (1 without a mask key), expanded to
+        ``(n_atoms_total, 3)``."""
+        n_atoms = batch[properties.n_atoms]
+        sum_sq = torch.zeros(
+            n_atoms.shape[0], dtype=target.dtype, device=target.device
+        ).index_add(0, batch[properties.idx_m], (target**2).sum(-1))
+        mean_sq = sum_sq / (3 * n_atoms.to(target.dtype))
+        scale = torch.rsqrt(mean_sq + self.step_floor**2)
+        if self.step_target_mask_key is not None:
+            scale = scale * batch[self.step_target_mask_key].reshape(-1).to(
+                target.dtype
+            )
+        return expand_per_atom(scale, n_atoms)
 
     def _inverse_force_scale(
         self, forces: torch.Tensor, batch: Dict[str, torch.Tensor]

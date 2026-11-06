@@ -1,0 +1,14 @@
+# @package _global_
+#
+# newton_step_hvp_eigdamp_batch_fin_rel (reference forces as an input,
+# relative residual loss) plus the relative step loss of step_target on
+# structures with a precomputed p*.
+#
+#   spktrain experiment=newton_step_hvp_eigdamp_batch_fin_rel_step \
+#       data.dataset.datapath=/path/to/db_with_e_min_and_newton_step_ref.db \
+#       globals.ref_model_path=/path/to/teacher globals.ref_model_format=torch
+
+defaults:
+  - newton_step_hvp_eigdamp_batch_fin_rel
+  - step_target
+  - _self_
