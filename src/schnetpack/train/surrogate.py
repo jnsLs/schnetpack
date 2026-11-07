@@ -219,6 +219,13 @@ class NewtonSurrogateTask(AtomisticTask):
         step_floor: float = 0.0,
         relative_step_key: str = "newton_step_rel",
         relative_step_target_key: str = "newton_step_ref_rel",
+        hvp_mode: str = "vjp",
+        soft_vecs_key: Optional[str] = None,
+        soft_vals_key: Optional[str] = None,
+        soft_mask_key: Optional[str] = None,
+        soft_floor: float = 0.0,
+        relative_soft_step_key: str = "soft_step_rel",
+        relative_soft_step_target_key: str = "soft_step_rel_ref",
     ):
         """
         Args:
@@ -327,7 +334,46 @@ class NewtonSurrogateTask(AtomisticTask):
             relative_step_key, relative_step_target_key: Prediction keys of the
                 scaled step and target, only written if ``step_target_key`` is
                 set.
+            hvp_mode: How the Hessian-vector product is taken. ``"vjp"``
+                (reverse mode, one backward pass) gives :math:`H^T p`; for a
+                direct-force teacher, whose Jacobian is not symmetric, that is
+                the transposed operator, and its exact damped step need not
+                converge near a minimum. ``"jvp"`` gives :math:`H p` (Newton's
+                step for the root of the force) by the double-backward trick,
+                :math:`H p = \\partial_u (H^T u \\cdot p)`, at the price of a
+                second backward pass. Identical for a conservative teacher.
+            soft_vecs_key, soft_vals_key: If given, the batch holds the ``k``
+                softest eigenpairs of each structure's (symmetrised,
+                translation-projected) reference Hessian: unit vectors
+                :math:`v_i` as a per-atom property of shape ``(n_atoms, 3k)``
+                (atom block of :math:`v_1`, then :math:`v_2`, ...) and
+                eigenvalues :math:`e_i` as ``k`` numbers per structure, in the
+                damping's units. The task then also writes, per structure and
+                mode, :math:`c_i = v_i^T r / (e_i + \\lambda)` divided by the
+                structure's soft-step scale
+                :math:`\\sqrt{\\langle s_i^2 \\rangle_i + \\mathrm{floor}^2}`,
+                :math:`s_i = v_i^T F / (e_i + \\lambda)`, under
+                ``relative_soft_step_key``, and zeros of the same shape under
+                ``relative_soft_step_target_key``. Here :math:`r = (H + \\lambda
+                I) p - F` is the residual that is already computed, so
+                :math:`c_i` is the error of the step along mode :math:`i`
+                (:math:`r = (H + \\lambda I)(p - p^*)`) and :math:`s_i` the exact
+                step along it: an MSE on these is the relative step error
+                restricted to the soft subspace, the part of the step the
+                residual loss weights by :math:`(e_i + \\lambda)^2` and cannot
+                see near a minimum -- with the same one Hessian-vector
+                product, and without a precomputed solution of the system.
+            soft_mask_key: Optional per-structure batch key (0 or 1) saying
+                which structures carry eigenpairs; the others contribute
+                nothing, and their vectors and values may be zero.
+            soft_floor: Floor of the soft-step scale, in the positions' unit.
+            relative_soft_step_key, relative_soft_step_target_key: Prediction
+                keys of the scaled soft-subspace error and its zero target.
         """
+        if hvp_mode not in ("vjp", "jvp"):
+            raise ValueError(f"hvp_mode must be 'vjp' or 'jvp', got {hvp_mode!r}")
+        if (soft_vecs_key is None) != (soft_vals_key is None):
+            raise ValueError("give both soft_vecs_key and soft_vals_key, or neither")
         if damping_source not in DAMPING_SOURCES:
             raise ValueError(
                 f"unknown damping_source {damping_source!r}, expected one of "
@@ -380,6 +426,13 @@ class NewtonSurrogateTask(AtomisticTask):
         self.step_floor = step_floor
         self.relative_step_key = relative_step_key
         self.relative_step_target_key = relative_step_target_key
+        self.hvp_mode = hvp_mode
+        self.soft_vecs_key = soft_vecs_key
+        self.soft_vals_key = soft_vals_key
+        self.soft_mask_key = soft_mask_key
+        self.soft_floor = soft_floor
+        self.relative_soft_step_key = relative_soft_step_key
+        self.relative_soft_step_target_key = relative_soft_step_target_key
 
         self._load_ref_model()
 
@@ -474,17 +527,7 @@ class NewtonSurrogateTask(AtomisticTask):
         step = pred[self.newton_step_key]
         damping = self._damping(batch, pred, forces, positions)
 
-        # F = -dE/dR, so d(F.p)/dR = -H p. create_graph must be True in
-        # training: it is what lets gradients reach the model that produced the
-        # step and the damping. In eval mode there is no backward pass, so the
-        # graph is not needed.
-        hessian_product = -grad(
-            forces,
-            positions,
-            step,
-            create_graph=self.training,
-            retain_graph=True,
-        )[0]
+        hessian_product = self._hessian_product(forces, positions, step)
 
         damped_part = step * expand_per_atom(damping, batch[properties.n_atoms])
 
@@ -499,7 +542,78 @@ class NewtonSurrogateTask(AtomisticTask):
             scale = self._inverse_step_scale(target, batch)
             pred[self.relative_step_key] = step * scale
             pred[self.relative_step_target_key] = target * scale
+        if self.soft_vecs_key is not None:
+            residual = pred[self.damped_hvp_key] - forces
+            soft = self._soft_subspace_error(residual, forces.detach(), damping, batch)
+            pred[self.relative_soft_step_key] = soft
+            pred[self.relative_soft_step_target_key] = torch.zeros_like(soft)
         return pred
+
+    def _hessian_product(
+        self, forces: torch.Tensor, positions: torch.Tensor, step: torch.Tensor
+    ) -> torch.Tensor:
+        """:math:`H p` (``"jvp"``) or :math:`H^T p` (``"vjp"``) of the reference
+        potential, :math:`H = -\\partial F / \\partial R`.
+
+        F = -dE/dR, so d(F.p)/dR = -H p. create_graph must be True in training:
+        it is what lets gradients reach the model that produced the step and
+        the damping. In eval mode there is no backward pass, so the graph is not
+        needed.
+        """
+        if self.hvp_mode == "vjp":
+            return -grad(
+                forces,
+                positions,
+                step,
+                create_graph=self.training,
+                retain_graph=True,
+            )[0]
+        # Forward mode by the double-backward trick: g(u) = -d(F.u)/dR = H^T u is
+        # linear in u, so d(g(u).p)/du = H p. The first graph is always kept:
+        # the second derivative needs it even in eval mode.
+        u = torch.zeros_like(forces, requires_grad=True)
+        transposed = -grad(forces, positions, u, create_graph=True, retain_graph=True)[0]
+        return grad(
+            transposed,
+            u,
+            step,
+            create_graph=self.training,
+            retain_graph=True,
+        )[0]
+
+    def _soft_subspace_error(
+        self,
+        residual: torch.Tensor,
+        forces: torch.Tensor,
+        damping: torch.Tensor,
+        batch: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """:math:`m\\, c_i / \\sqrt{\\langle s_i^2 \\rangle_i + \\mathrm{floor}^2}`
+        per structure and soft mode, shape ``(n_mol, k)``; see ``soft_vecs_key``
+        in :meth:`__init__`."""
+        n_atoms = batch[properties.n_atoms]
+        idx_m = batch[properties.idx_m]
+        n_mol = n_atoms.shape[0]
+        vecs = batch[self.soft_vecs_key].to(residual.dtype)  # (n_atoms_total, 3k)
+        k = vecs.shape[-1] // 3
+        vecs = vecs.reshape(vecs.shape[0], k, 3)
+        vals = batch[self.soft_vals_key].to(residual.dtype).reshape(n_mol, k)
+
+        def project(x: torch.Tensor) -> torch.Tensor:  # (n_atoms_total, 3) -> (n_mol, k)
+            per_atom = (vecs * x.unsqueeze(1)).sum(-1)
+            return torch.zeros(
+                n_mol, k, dtype=x.dtype, device=x.device
+            ).index_add(0, idx_m, per_atom)
+
+        # e_i + lambda > 0 by construction (lambda >= relu(-e_min) + eps); the
+        # clamp only guards masked structures, whose values may be zero.
+        inv_curv = 1.0 / (vals + damping.detach().reshape(n_mol, 1)).clamp_min(1e-12)
+        error = project(residual) * inv_curv  # c_i, positions' unit
+        exact = project(forces) * inv_curv  # s_i = v_i . p*, positions' unit
+        scale = torch.rsqrt(exact.pow(2).mean(-1, keepdim=True) + self.soft_floor**2)
+        if self.soft_mask_key is not None:
+            scale = scale * batch[self.soft_mask_key].reshape(n_mol, 1).to(scale.dtype)
+        return error * scale
 
     def _inverse_step_scale(
         self, target: torch.Tensor, batch: Dict[str, torch.Tensor]

@@ -1,0 +1,121 @@
+# @package _global_
+#
+# Mixin, not an experiment of its own: adds the SOFT-SUBSPACE STEP loss on
+# structures that carry the k softest eigenpairs (e_i, v_i) of the reference
+# Hessian,
+#
+#   sum_i c_i^2 / (mean_i s_i^2 + floor^2),   c_i = v_i.r / (e_i + lambda),  s_i = v_i.F / (e_i + lambda),
+#
+# with r = (H + lambda I) p - F the residual the relative residual loss already
+# computes. r = (H + lambda I)(p - p*), so c_i is the step error along mode i
+# and s_i the exact step along it: the term is the relative step error
+# restricted to the soft subspace, which the residual weights by (e_i + lambda)^2
+# and cannot see near a minimum. Same one Hessian-vector product, no solve of
+# the system, no precomputed step; the eigenpairs come from Lanczos (or, for a
+# small molecule, from the materialised Hessian: round2/forcein/precompute_soft.py).
+#
+# The Hessian-vector product is taken in forward mode (globals.hvp_mode=jvp):
+# for a direct-force teacher the reverse-mode product is H^T p, and its exact
+# damped step does not converge near the minima of the tetrapeptide; H p does.
+#
+# The database holds v_i under globals.soft_vecs_key (per atom, (n_atoms, 3k),
+# unit norm), e_i under globals.soft_vals_key (k per structure, converted on
+# load to the damping's units) and a 0/1 flag per structure under
+# globals.soft_mask_key. globals.soft_floor is an rms soft-step component in the
+# distance unit.
+#
+# Included after newton_step_hvp_eigdamp_batch_fin_rel in the defaults list of
+# newton_step_hvp_eigdamp_batch_fin_rel_soft.
+
+globals:
+  hvp_mode: jvp
+  soft_vecs_key: soft_vecs
+  soft_vals_key: soft_vals
+  soft_mask_key: has_soft
+  soft_floor: 0.001
+  soft_loss_weight: 10.0
+  relative_soft_step_key: soft_step_rel
+  relative_soft_step_target_key: soft_step_rel_ref
+
+data:
+  dataset:
+    load_properties:
+      - ${globals.emin_key}
+      - ${globals.soft_vecs_key}
+      - ${globals.soft_vals_key}
+      - ${globals.soft_mask_key}
+    property_units:
+      e_min: ${globals.energy_unit}/${globals.distance_unit}/${globals.distance_unit}
+      soft_vals: ${globals.energy_unit}/${globals.distance_unit}/${globals.distance_unit}
+
+task:
+  hvp_mode: ${globals.hvp_mode}
+  soft_vecs_key: ${globals.soft_vecs_key}
+  soft_vals_key: ${globals.soft_vals_key}
+  soft_mask_key: ${globals.soft_mask_key}
+  soft_floor: ${globals.soft_floor}
+  relative_soft_step_key: ${globals.relative_soft_step_key}
+  relative_soft_step_target_key: ${globals.relative_soft_step_target_key}
+  outputs:
+    # the relative residual (as newton_step_hvp_eigdamp_batch_rel)
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.relative_damped_hvp_key}
+      target_property: ${globals.relative_ref_forces_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 1.00
+    # the relative step error in the soft subspace
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.relative_soft_step_key}
+      target_property: ${globals.relative_soft_step_target_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: ${globals.soft_loss_weight}
+    # logged only: the absolute residual the other experiments train on
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.damped_hvp_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      loss_fn:
+        _target_: torch.nn.MSELoss
+      metrics:
+        mae:
+          _target_: torchmetrics.regression.MeanAbsoluteError
+        mse:
+          _target_: torchmetrics.regression.MeanSquaredError
+      loss_weight: 0.0
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.damping_factor_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+    - _target_: schnetpack.task.UnsupervisedModelOutput
+      name: ${globals.emin_key}
+      loss_weight: 0.0
+      metrics:
+        mean:
+          _target_: torchmetrics.aggregation.MeanMetric
+        min:
+          _target_: torchmetrics.aggregation.MinMetric
+        max:
+          _target_: torchmetrics.aggregation.MaxMetric
+    - _target_: schnetpack.task.ModelOutput
+      name: ${globals.newton_step_key}
+      target_property: ${globals.ref_forces_key}
+      target_source: prediction
+      metrics:
+        ascent_loss:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: True
+        mean_ascent:
+          _target_: schnetpack.train.metrics.IsDescendingMetric
+          clamp_at_zero: False

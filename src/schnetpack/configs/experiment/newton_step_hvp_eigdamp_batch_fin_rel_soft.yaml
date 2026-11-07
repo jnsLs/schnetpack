@@ -1,0 +1,15 @@
+# @package _global_
+#
+# newton_step_hvp_eigdamp_batch_fin_rel (reference forces as an input, relative
+# residual loss) plus the soft-subspace step loss of soft_subspace on structures
+# that carry the k softest eigenpairs of the reference Hessian, with the
+# forward-mode Hessian-vector product.
+#
+#   spktrain experiment=newton_step_hvp_eigdamp_batch_fin_rel_soft \
+#       data.dataset.datapath=/path/to/db_with_e_min_and_soft_vecs.db \
+#       globals.ref_model_path=/path/to/teacher globals.ref_model_format=torch
+
+defaults:
+  - newton_step_hvp_eigdamp_batch_fin_rel
+  - soft_subspace
+  - _self_
